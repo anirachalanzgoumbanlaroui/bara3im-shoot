@@ -38,31 +38,10 @@ class Migration(migrations.Migration):
             name='action',
             field=models.CharField(help_text="Action performed (e.g., 'fingerprint_enrolled', 'manual_attendance_created')", max_length=255),
         ),
-        # Convert AttendanceLog.id from BigAutoField (bigint) to UUIDField.
-        # PostgreSQL cannot directly cast bigint to uuid, so we drop the old
-        # column and add a new UUID primary key.
-        migrations.RunSQL(
-            sql=[
-                # Drop the old bigint primary key
-                'ALTER TABLE "attendance_attendancelog" DROP CONSTRAINT "attendance_attendancelog_pkey";',
-                'ALTER TABLE "attendance_attendancelog" DROP COLUMN "id";',
-                # Add a new UUID primary key with defaults
-                'ALTER TABLE "attendance_attendancelog" ADD COLUMN "id" uuid NOT NULL DEFAULT gen_random_uuid();',
-                'ALTER TABLE "attendance_attendancelog" ADD CONSTRAINT "attendance_attendancelog_pkey" PRIMARY KEY ("id");',
-            ],
-            reverse_sql=[
-                'ALTER TABLE "attendance_attendancelog" DROP CONSTRAINT "attendance_attendancelog_pkey";',
-                'ALTER TABLE "attendance_attendancelog" DROP COLUMN "id";',
-                'ALTER TABLE "attendance_attendancelog" ADD COLUMN "id" bigserial NOT NULL;',
-                'ALTER TABLE "attendance_attendancelog" ADD CONSTRAINT "attendance_attendancelog_pkey" PRIMARY KEY ("id");',
-            ],
-            state_operations=[
-                migrations.AlterField(
-                    model_name='attendancelog',
-                    name='id',
-                    field=models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False),
-                ),
-            ],
+        migrations.AlterField(
+            model_name='attendancelog',
+            name='id',
+            field=models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False),
         ),
         migrations.AddConstraint(
             model_name='attendancerecord',
