@@ -8,15 +8,18 @@ def custom_exception_handler(exc, context):
     if response is None:
         return response
 
-    detail = response.data.get('detail') if isinstance(response.data, dict) else None
-    if detail is None and isinstance(response.data, dict):
-        detail = 'Request failed.'
+    if isinstance(response.data, dict):
+        # Top-level 'detail' key (e.g. authentication errors, permission errors)
+        detail = response.data.get('detail')
 
-    payload = {'detail': detail}
-    if isinstance(response.data, dict) and len(response.data) > 1:
-        payload['errors'] = response.data
-    elif isinstance(response.data, dict) and detail is None:
-        payload['errors'] = response.data
+        # Field-level validation errors (e.g. unique constraints, required fields)
+        field_errors = {k: v for k, v in response.data.items() if k != 'detail'}
+
+        payload = {'detail': detail or 'Request failed.'}
+        if field_errors:
+            payload['errors'] = field_errors
+    else:
+        payload = {'detail': 'Request failed.'}
 
     response.data = payload
     return response
