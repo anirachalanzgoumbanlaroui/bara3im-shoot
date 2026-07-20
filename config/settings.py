@@ -70,10 +70,10 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-# Database — MySQL
+# Database Configuration
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.mysql',
+        'ENGINE': config('DB_ENGINE', default='django.db.backends.mysql'),
         'NAME': config('DB_NAME', default='bara3im_shoot'),
         'USER': config('DB_USER', default='root'),
         'PASSWORD': config('DB_PASSWORD', default='root'),

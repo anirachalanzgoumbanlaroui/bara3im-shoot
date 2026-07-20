@@ -1,6 +1,7 @@
 from rest_framework import serializers
-from .models import WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog
+from .models import WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog, SellerDailyOperation
 from .services import DailyOperationsService
+
 
 class DailyEmployeePerformanceSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
@@ -117,3 +118,23 @@ class DailyOperationLogSerializer(serializers.ModelSerializer):
 
     def get_user_name(self, obj):
         return obj.user.username if obj.user else "System"
+
+
+class SellerDailyOperationSerializer(serializers.ModelSerializer):
+    seller_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SellerDailyOperation
+        fields = [
+            'id', 'seller', 'seller_name', 'work_day',
+            'amount', 'notes', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_seller_name(self, obj):
+        return f"{obj.seller.first_name} {obj.seller.last_name}"
+
+    def validate_amount(self, value):
+        if value < 0:
+            raise serializers.ValidationError("Amount cannot be negative.")
+        return value

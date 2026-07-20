@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog
+from .models import WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog, SellerDailyOperation
 
 @admin.register(WorkDay)
 class WorkDayAdmin(admin.ModelAdmin):
@@ -24,3 +24,9 @@ class DailyOperationLogAdmin(admin.ModelAdmin):
     list_display = ('action', 'work_day', 'user', 'created_at')
     list_filter = ('action', 'work_day')
     search_fields = ('action', 'user__username')
+
+@admin.register(SellerDailyOperation)
+class SellerDailyOperationAdmin(admin.ModelAdmin):
+    list_display = ('seller', 'work_day', 'amount', 'created_at')
+    list_filter = ('work_day', 'seller')
+    search_fields = ('seller__first_name', 'seller__last_name')

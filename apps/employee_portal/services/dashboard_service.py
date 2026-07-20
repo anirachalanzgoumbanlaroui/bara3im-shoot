@@ -15,6 +15,9 @@ class EmployeeDashboardService:
         today = date.today()
         role = employee.role
         
+        if role == 'seller':
+            return EmployeeDashboardService.get_seller_dashboard_data(employee)
+        
         # 1. Today's Attendance
         attendance = AttendanceRecord.objects.filter(employee=employee, date=today).first()
         attendance_data = {
@@ -451,5 +454,163 @@ class EmployeeDashboardService:
             'achievement_badges': achievement_badges,
             'personal_records': personal_records,
             'smart_insights': smart_insights,
+            'recent_notifications': notification_preview,
+        }
+
+    @staticmethod
+    def get_seller_dashboard_data(employee):
+        from apps.daily_sessions.models import SellerDailyOperation
+        today = date.today()
+        
+        # 1. Fetch operations
+        ops = list(SellerDailyOperation.objects.filter(seller=employee).order_by('work_day__date'))
+        
+        # Today's operation
+        today_op = SellerDailyOperation.objects.filter(seller=employee, work_day__date=today).first()
+        today_earnings = float(today_op.amount) if today_op else None
+        
+        # Monthly earnings
+        start_of_month = today.replace(day=1)
+        monthly_earnings = float(SellerDailyOperation.objects.filter(
+            seller=employee, 
+            work_day__date__gte=start_of_month,
+            work_day__date__lte=today
+        ).aggregate(total=Sum('amount'))['total'] or 0.0)
+        
+        # Lifetime earnings
+        lifetime_earnings = float(SellerDailyOperation.objects.filter(
+            seller=employee
+        ).aggregate(total=Sum('amount'))['total'] or 0.0)
+        
+        # Streaks
+        current_streak = 0
+        longest_streak = 0
+        temp_streak = 0
+        prev_date = None
+        for op in ops:
+            d = op.work_day.date
+            if prev_date is None:
+                temp_streak = 1
+            else:
+                if (d - prev_date).days == 1:
+                    temp_streak += 1
+                elif (d - prev_date).days > 1:
+                    temp_streak = 1
+            prev_date = d
+            longest_streak = max(longest_streak, temp_streak)
+
+        if prev_date and (today - prev_date).days <= 1:
+            current_streak = temp_streak
+        else:
+            current_streak = 0
+            
+        # Highest day
+        highest_day_val = float(SellerDailyOperation.objects.filter(seller=employee).aggregate(max_val=Max('amount'))['max_val'] or 0.0)
+        
+        # Total working days
+        total_working_days = len(ops)
+        
+        # History (last 10 ops)
+        history_list = []
+        for op in reversed(ops[-10:]):
+            history_list.append({
+                'id': str(op.id),
+                'date': op.work_day.date.isoformat(),
+                'amount': float(op.amount),
+                'notes': op.notes or ''
+            })
+            
+        # Achievements badges
+        achievements = [
+            {
+                'id': 'first_sale',
+                'name': 'First Sale',
+                'description': 'Successfully completed your first sale operation.',
+                'icon': '💰',
+                'is_unlocked': lifetime_earnings > 0,
+                'progress': 1.0 if lifetime_earnings > 0 else 0.0
+            },
+            {
+                'id': 'streak_7',
+                'name': '7 Day Streak',
+                'description': 'Record earnings for 7 consecutive days.',
+                'icon': '🏆',
+                'is_unlocked': longest_streak >= 7,
+                'progress': min(1.0, float(longest_streak) / 7.0)
+            },
+            {
+                'id': 'earned_100k',
+                'name': 'Earned 100K',
+                'description': 'Reach 100,000 DA in lifetime earnings.',
+                'icon': '💎',
+                'is_unlocked': lifetime_earnings >= 100000,
+                'progress': min(1.0, lifetime_earnings / 100000.0)
+            },
+            {
+                'id': 'earned_500k',
+                'name': 'Earned 500K',
+                'description': 'Reach 500,000 DA in lifetime earnings.',
+                'icon': '👑',
+                'is_unlocked': lifetime_earnings >= 500000,
+                'progress': min(1.0, lifetime_earnings / 500000.0)
+            },
+            {
+                'id': 'working_30_days',
+                'name': '30 Working Days',
+                'description': 'Complete 30 working days as a seller.',
+                'icon': '🔥',
+                'is_unlocked': total_working_days >= 30,
+                'progress': min(1.0, float(total_working_days) / 30.0)
+            }
+        ]
+        
+        # Hall of closers
+        hall_of_closers = {
+            'highest_day': highest_day_val,
+            'longest_streak': longest_streak,
+            'total_working_days': total_working_days,
+            'lifetime_earnings': lifetime_earnings,
+            'favorite_quote': 'Consistency beats motivation.'
+        }
+        
+        # Motivational banner
+        if today_earnings is None:
+            motivational_message = "No operations today yet."
+        elif today_earnings < 4000:
+            motivational_message = "Every great closer started with zero sales."
+        elif today_earnings < 6000:
+            motivational_message = "Nice work. Keep pushing."
+        elif today_earnings < 8000:
+            motivational_message = "You're printing money today."
+        else:
+            motivational_message = "Leave some commissions for tomorrow 😂"
+            
+        # Recent notifications
+        notifications = Notification.objects.filter(user=employee.user).order_by('-timestamp')[:5]
+        notification_preview = []
+        for n in notifications:
+            notification_preview.append({
+                'id': str(n.id),
+                'title': n.title,
+                'description': n.description,
+                'timestamp': n.timestamp.isoformat(),
+                'is_read': n.is_read,
+                'icon': n.icon or 'bell',
+            })
+            
+        return {
+            'greeting': f"Welcome back, {employee.first_name}!",
+            'employee_name': f"{employee.first_name} {employee.last_name}",
+            'role': 'seller',
+            'current_date': today.isoformat(),
+            'today_earnings': today_earnings,
+            'monthly_earnings': monthly_earnings,
+            'lifetime_earnings': lifetime_earnings,
+            'current_streak': current_streak,
+            'longest_streak': longest_streak,
+            'history': history_list,
+            'achievements': achievements,
+            'hall_of_closers': hall_of_closers,
+            'motivational_message': motivational_message,
             'recent_notifications': notification_preview,
         }

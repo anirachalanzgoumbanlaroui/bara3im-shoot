@@ -75,16 +75,35 @@ class EmployeeDashboardViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['get'], url_path='history/daily')
     def work_history(self, request):
-        queryset = HistoryService.get_work_history(self.get_employee())
-        
+        employee = self.get_employee()
         paginator = EmployeePortalPagination()
+
+        if employee.role == 'seller':
+            from apps.daily_sessions.models import SellerDailyOperation
+            queryset = SellerDailyOperation.objects.filter(seller=employee).select_related('work_day').order_by('-work_day__date')
+            page = paginator.paginate_queryset(queryset, request)
+            data = []
+            for op in page:
+                data.append({
+                    'id': str(op.id),
+                    'date': op.work_day.date.isoformat(),
+                    'photo_count': 0,
+                    'earnings': float(op.amount),
+                    'unit_price': 0.0,
+                    'adjustment_type': 'manual',
+                    'adjustment_reason': op.notes or '',
+                    'team': None
+                })
+            return paginator.get_paginated_response(data)
+
+        queryset = HistoryService.get_work_history(employee)
         page = paginator.paginate_queryset(queryset, request)
         
         data = []
         for perf in page:
             work_day = perf.work_day
             team = perf.team
-            unit_price = work_day.photographer_unit_price if self.get_employee().role == 'photographer' else work_day.clown_unit_price
+            unit_price = work_day.photographer_unit_price if employee.role == 'photographer' else work_day.clown_unit_price
             
             earnings = float(perf.photo_count * unit_price)
             

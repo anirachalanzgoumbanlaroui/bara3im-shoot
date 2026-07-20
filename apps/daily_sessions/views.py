@@ -4,13 +4,14 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 
-from .models import WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog
+from .models import WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog, SellerDailyOperation
 from .serializers import (
     WorkDaySerializer, WorkDayListSerializer,
     DailyTeamSerializer, DailyEmployeePerformanceSerializer,
-    DailyOperationLogSerializer
+    DailyOperationLogSerializer, SellerDailyOperationSerializer
 )
 from .services import DailyOperationsService
+from apps.employees.models import Employee
 
 
 class WorkDayViewSet(viewsets.ModelViewSet):
@@ -121,3 +122,54 @@ class DailyOperationLogViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = DailyOperationLogSerializer
     permission_classes = [IsAuthenticated]
     filterset_fields = ['work_day']
+
+
+class SellerDailyOperationViewSet(viewsets.ModelViewSet):
+    queryset = SellerDailyOperation.objects.all()
+    serializer_class = SellerDailyOperationSerializer
+    permission_classes = [IsAuthenticated]
+    filterset_fields = ['work_day', 'seller']
+
+    @action(detail=False, methods=['post'], url_path='bulk-save')
+    def bulk_save(self, request):
+        work_day_id = request.data.get('work_day')
+        operations_data = request.data.get('operations', [])
+
+        if not work_day_id:
+            return Response({"detail": "work_day is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        work_day = get_object_or_404(WorkDay, id=work_day_id)
+        saved_seller_ids = []
+
+        for op in operations_data:
+            seller_id = op.get('seller')
+            amount = op.get('amount')
+            notes = op.get('notes', '')
+
+            if not seller_id or amount is None:
+                continue
+
+            seller = get_object_or_404(Employee, id=seller_id, role='seller')
+
+            # Update or create
+            operation, created = SellerDailyOperation.objects.update_or_create(
+                work_day=work_day,
+                seller=seller,
+                defaults={
+                    'amount': amount,
+                    'notes': notes
+                }
+            )
+            saved_seller_ids.append(seller.id)
+
+        # Delete operations that are not in the list anymore
+        SellerDailyOperation.objects.filter(work_day=work_day).exclude(seller_id__in=saved_seller_ids).delete()
+
+        DailyOperationsService.log_action(
+            work_day, "Seller Earnings Bulk Saved", request.user,
+            {"count": len(saved_seller_ids)}
+        )
+
+        updated_ops = SellerDailyOperation.objects.filter(work_day=work_day)
+        serializer = self.get_serializer(updated_ops, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)

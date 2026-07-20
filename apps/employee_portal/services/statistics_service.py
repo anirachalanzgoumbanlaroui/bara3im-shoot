@@ -9,6 +9,127 @@ class StatisticsService:
         today = date.today()
         role = employee.role
         
+        if role == 'seller':
+            from apps.daily_sessions.models import SellerDailyOperation
+            ops = list(SellerDailyOperation.objects.filter(seller=employee).order_by('work_day__date'))
+            
+            # Monthly overview
+            start_of_month = date(today.year, today.month, 1)
+            month_ops = SellerDailyOperation.objects.filter(
+                seller=employee,
+                work_day__date__gte=start_of_month,
+                work_day__date__lte=today
+            )
+            month_worked_days = month_ops.count()
+            month_earnings = float(month_ops.aggregate(total=Sum('amount'))['total'] or 0.0)
+            
+            # Weekly stats
+            start_of_week = today - timedelta(days=today.weekday())
+            end_of_week = start_of_week + timedelta(days=6)
+            week_ops = SellerDailyOperation.objects.filter(
+                seller=employee,
+                work_day__date__gte=start_of_week,
+                work_day__date__lte=end_of_week
+            )
+            week_worked_days = week_ops.count()
+            week_earnings = float(week_ops.aggregate(total=Sum('amount'))['total'] or 0.0)
+            
+            # Bar chart data for earnings (repuposed fields to prevent crash)
+            daily_photo_counts = []
+            days_of_week_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            for i in range(7):
+                d = start_of_week + timedelta(days=i)
+                op_d = week_ops.filter(work_day__date=d).first()
+                daily_photo_counts.append({
+                    'day': days_of_week_names[i],
+                    'photos': int(op_d.amount) if op_d else 0, # Map earnings to photos to utilize chart
+                    'date': d.isoformat(),
+                })
+                
+            all_time_earnings = float(SellerDailyOperation.objects.filter(seller=employee).aggregate(total=Sum('amount'))['total'] or 0.0)
+            best_day = float(SellerDailyOperation.objects.filter(seller=employee).aggregate(max_val=Max('amount'))['max_val'] or 0.0)
+            
+            # Attendance stats
+            all_att = AttendanceRecord.objects.filter(employee=employee)
+            all_att_stats = all_att.aggregate(
+                total=Count('id'),
+                present=Count('id', filter=Q(status='present')),
+                late=Count('id', filter=Q(status='late')),
+                absent=Count('id', filter=Q(status='absent'))
+            )
+            all_total = all_att_stats['total'] or 0
+            all_pres_late = (all_att_stats['present'] or 0) + (all_att_stats['late'] or 0)
+            all_att_rate = (all_pres_late / all_total * 100.0) if all_total > 0 else 0.0
+            
+            # Month attendance
+            month_attendance = AttendanceRecord.objects.filter(
+                employee=employee,
+                date__gte=start_of_month,
+                date__lte=today
+            )
+            month_att_stats = month_attendance.aggregate(
+                total=Count('id'),
+                present=Count('id', filter=Q(status='present')),
+                late=Count('id', filter=Q(status='late')),
+                absent=Count('id', filter=Q(status='absent'))
+            )
+            month_total_days = month_att_stats['total'] or 0
+            month_present_late_days = (month_att_stats['present'] or 0) + (month_att_stats['late'] or 0)
+            month_att_rate = (month_present_late_days / month_total_days * 100.0) if month_total_days > 0 else 0.0
+            
+            # Attendance Streak
+            current_streak = 0
+            temp_streak = 0
+            prev_d = None
+            for r in list(all_att.order_by('date')):
+                if r.status in ['present', 'late']:
+                    if prev_d is None or (r.date - prev_d).days == 1:
+                        temp_streak += 1
+                    elif (r.date - prev_d).days > 1:
+                        temp_streak = 1
+                    prev_d = r.date
+                else:
+                    temp_streak = 0
+                    prev_d = None
+            if prev_d and (today - prev_d).days <= 1:
+                current_streak = temp_streak
+            else:
+                current_streak = 0
+
+            return {
+                'worked_days': len(ops),
+                'attendance_rate': round(all_att_rate, 2),
+                'present_days': all_att_stats['present'] or 0,
+                'late_days': all_att_stats['late'] or 0,
+                'absent_days': all_att_stats['absent'] or 0,
+                'total_photos': 0,
+                'average_photos_per_day': 0.0,
+                'estimated_monthly_earnings': month_earnings,
+                'best_day_earnings': best_day,
+                'worst_day_earnings': 0.0,
+                'weekly_stats': {
+                    'worked_days': week_worked_days,
+                    'attendance_rate': round(month_att_rate, 2),
+                    'average_photos': 0.0,
+                    'weekly_photos': 0,
+                    'weekly_earnings': week_earnings,
+                    'weekly_goal_completion': 0.0,
+                    'daily_photo_counts': daily_photo_counts,
+                },
+                'monthly_overview': {
+                    'worked_days': month_worked_days,
+                    'present_days': month_att_stats['present'] or 0,
+                    'late_days': month_att_stats['late'] or 0,
+                    'absent_days': month_att_stats['absent'] or 0,
+                    'total_photos': 0,
+                    'average_photos_per_day': 0.0,
+                    'estimated_monthly_earnings': month_earnings,
+                    'best_performance_day': None,
+                    'current_attendance_streak': current_streak,
+                    'goal_completion_rate': 0.0,
+                },
+            }
+        
         # 1. Monthly Overview
         start_of_month = date(today.year, today.month, 1)
         if today.month == 12:
