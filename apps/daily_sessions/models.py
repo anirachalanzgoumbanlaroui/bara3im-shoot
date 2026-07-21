@@ -127,23 +127,22 @@ class DailyTeam(models.Model):
         if self.clown.role != 'clown':
             raise ValidationError("Clown must have the role 'clown'.")
 
-        # Cross-location uniqueness: same photographer cannot appear at two locations on the same day
-        work_day = self.daily_location.work_day
+        # Only prevent duplicate assignment within the same daily location
         conflict_photo = DailyTeam.objects.filter(
-            daily_location__work_day=work_day,
+            daily_location=self.daily_location,
             photographer=self.photographer
         ).exclude(pk=self.pk)
         if conflict_photo.exists():
             raise ValidationError(
-                f"{self.photographer.first_name} is already assigned to another location today."
+                f"{self.photographer.first_name} is already in a team at this location."
             )
         conflict_clown = DailyTeam.objects.filter(
-            daily_location__work_day=work_day,
+            daily_location=self.daily_location,
             clown=self.clown
         ).exclude(pk=self.pk)
         if conflict_clown.exists():
             raise ValidationError(
-                f"{self.clown.first_name} is already assigned to another location today."
+                f"{self.clown.first_name} is already in a team at this location."
             )
 
 

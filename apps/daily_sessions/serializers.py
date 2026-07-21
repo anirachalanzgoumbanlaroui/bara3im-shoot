@@ -69,25 +69,25 @@ class DailyTeamSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"clown": "Must have role 'clown'."})
 
         if daily_location:
-            work_day = daily_location.work_day
+            # Only prevent duplicate assignment WITHIN the same daily location
             conflict_photo = DailyTeam.objects.filter(
-                daily_location__work_day=work_day,
+                daily_location=daily_location,
                 photographer=photographer
             )
             if self.instance:
                 conflict_photo = conflict_photo.exclude(pk=self.instance.pk)
             if conflict_photo.exists():
-                raise serializers.ValidationError({"photographer": f"{photographer.first_name} is already assigned to another location today."})
+                raise serializers.ValidationError({"photographer": f"{photographer.first_name} is already in a team at this location."})
 
             conflict_clown = DailyTeam.objects.filter(
-                daily_location__work_day=work_day,
+                daily_location=daily_location,
                 clown=clown
             )
             if self.instance:
                 conflict_clown = conflict_clown.exclude(pk=self.instance.pk)
             if conflict_clown.exists():
-                raise serializers.ValidationError({"clown": f"{clown.first_name} is already assigned to another location today."})
-            
+                raise serializers.ValidationError({"clown": f"{clown.first_name} is already in a team at this location."})
+
         return attrs
 
 
