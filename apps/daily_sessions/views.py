@@ -29,6 +29,18 @@ class DailyLocationViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     filterset_fields = ['work_day', 'location']
 
+    def create(self, request, *args, **kwargs):
+        work_day_id = request.data.get('work_day')
+        location_id = request.data.get('location_id') or request.data.get('location')
+        if work_day_id and location_id:
+            daily_loc, created = DailyLocation.objects.get_or_create(
+                work_day_id=work_day_id,
+                location_id=location_id
+            )
+            serializer = self.get_serializer(daily_loc)
+            return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+        return super().create(request, *args, **kwargs)
+
     @action(detail=True, methods=['post'])
     def generate_teams(self, request, pk=None):
         daily_location = self.get_object()
