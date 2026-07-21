@@ -37,20 +37,18 @@ class DailyOperationsService:
         Auto-generate teams for a daily location based on today's attendance.
         Only photographer/clown who are present and NOT already assigned to any location are paired.
         """
-        work_day = daily_location.work_day
-        
-        # Already assigned today in ANY location
-        assigned_photographers = DailyTeam.objects.filter(
-            daily_location__work_day=work_day
-        ).values_list('photographer_id', flat=True)
-        
-        assigned_clowns = DailyTeam.objects.filter(
-            daily_location__work_day=work_day
-        ).values_list('clown_id', flat=True)
-        
         attendances = AttendanceRecord.objects.filter(date=work_day.date, status='present')
         present_employees = [a.employee for a in attendances]
-        
+
+        # Only skip employees already in THIS daily_location
+        assigned_photographers = DailyTeam.objects.filter(
+            daily_location=daily_location
+        ).values_list('photographer_id', flat=True)
+
+        assigned_clowns = DailyTeam.objects.filter(
+            daily_location=daily_location
+        ).values_list('clown_id', flat=True)
+
         photographers = [e for e in present_employees if e.role == 'photographer' and e.id not in assigned_photographers]
         clowns = [e for e in present_employees if e.role == 'clown' and e.id not in assigned_clowns]
         
@@ -110,13 +108,13 @@ class DailyOperationsService:
         if not prev_daily_loc:
             return 0
             
-        # Filter out already assigned today in ANY location
+        # Only skip employees already in THIS daily_location
         assigned_photographers = DailyTeam.objects.filter(
-            daily_location__work_day=work_day
+            daily_location=daily_location
         ).values_list('photographer_id', flat=True)
-        
+
         assigned_clowns = DailyTeam.objects.filter(
-            daily_location__work_day=work_day
+            daily_location=daily_location
         ).values_list('clown_id', flat=True)
             
         teams_created = 0
