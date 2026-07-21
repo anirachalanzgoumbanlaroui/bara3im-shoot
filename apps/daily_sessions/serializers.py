@@ -174,6 +174,12 @@ class WorkDaySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Unit price cannot be negative.")
         return value
 
+    def to_representation(self, instance):
+        # Ensure all seeded locations (Ardis, Sablette) automatically exist for this work day
+        for loc in Location.objects.all():
+            DailyLocation.objects.get_or_create(work_day=instance, location=loc)
+        return super().to_representation(instance)
+
     def create(self, validated_data):
         validated_data['created_by'] = self.context['request'].user
         work_day = super().create(validated_data)
