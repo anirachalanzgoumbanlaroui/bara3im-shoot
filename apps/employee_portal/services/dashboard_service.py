@@ -31,8 +31,16 @@ class EmployeeDashboardService:
         
         team_data = None
         performance_data = None
+        today_location = None
         
         if performance:
+            if performance.daily_location:
+                today_location = {
+                    'id': str(performance.daily_location.location.id),
+                    'name': performance.daily_location.location.name,
+                    'icon': performance.daily_location.location.icon,
+                    'color_hex': performance.daily_location.location.color_hex,
+                }
             team = performance.team
             team_data = {
                 'team_name': team.team_name,
@@ -444,6 +452,7 @@ class EmployeeDashboardService:
             'employee_name': f"{employee.first_name} {employee.last_name}",
             'role': role.title(),
             'current_date': today.isoformat(),
+            'today_location': today_location,
             'attendance': attendance_data,
             'performance': performance_data,
             'team': team_data,
@@ -463,18 +472,27 @@ class EmployeeDashboardService:
         today = date.today()
         
         # 1. Fetch operations
-        ops = list(SellerDailyOperation.objects.filter(seller=employee).order_by('work_day__date'))
+        ops = list(SellerDailyOperation.objects.filter(seller=employee).order_by('daily_location__work_day__date'))
         
         # Today's operation
-        today_op = SellerDailyOperation.objects.filter(seller=employee, work_day__date=today).first()
+        today_op = SellerDailyOperation.objects.filter(seller=employee, daily_location__work_day__date=today).first()
         today_earnings = float(today_op.amount) if today_op else None
         
+        today_location = None
+        if today_op and today_op.daily_location:
+            today_location = {
+                'id': str(today_op.daily_location.location.id),
+                'name': today_op.daily_location.location.name,
+                'icon': today_op.daily_location.location.icon,
+                'color_hex': today_op.daily_location.location.color_hex,
+            }
+            
         # Monthly earnings
         start_of_month = today.replace(day=1)
         monthly_earnings = float(SellerDailyOperation.objects.filter(
             seller=employee, 
-            work_day__date__gte=start_of_month,
-            work_day__date__lte=today
+            daily_location__work_day__date__gte=start_of_month,
+            daily_location__work_day__date__lte=today
         ).aggregate(total=Sum('amount'))['total'] or 0.0)
         
         # Lifetime earnings
@@ -488,7 +506,7 @@ class EmployeeDashboardService:
         temp_streak = 0
         prev_date = None
         for op in ops:
-            d = op.work_day.date
+            d = op.daily_location.work_day.date
             if prev_date is None:
                 temp_streak = 1
             else:
@@ -515,7 +533,7 @@ class EmployeeDashboardService:
         for op in reversed(ops[-10:]):
             history_list.append({
                 'id': str(op.id),
-                'date': op.work_day.date.isoformat(),
+                'date': op.daily_location.work_day.date.isoformat(),
                 'amount': float(op.amount),
                 'notes': op.notes or ''
             })
@@ -603,6 +621,7 @@ class EmployeeDashboardService:
             'employee_name': f"{employee.first_name} {employee.last_name}",
             'role': 'seller',
             'current_date': today.isoformat(),
+            'today_location': today_location,
             'today_earnings': today_earnings,
             'monthly_earnings': monthly_earnings,
             'lifetime_earnings': lifetime_earnings,
