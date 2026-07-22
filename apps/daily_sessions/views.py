@@ -63,6 +63,19 @@ class WorkDayViewSet(viewsets.ModelViewSet):
             return WorkDayListSerializer
         return WorkDaySerializer
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        location_id = self.request.query_params.get('location')
+        if location_id:
+            qs = qs.filter(daily_locations__location_id=location_id)
+        date_from = self.request.query_params.get('date_from')
+        if date_from:
+            qs = qs.filter(date__gte=date_from)
+        date_to = self.request.query_params.get('date_to')
+        if date_to:
+            qs = qs.filter(date__lte=date_to)
+        return qs.distinct()
+
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
         work_day = self.get_object()
