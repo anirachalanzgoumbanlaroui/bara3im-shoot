@@ -37,16 +37,17 @@ class DailyOperationsService:
         Auto-generate teams for a daily location based on today's attendance.
         Only photographer/clown who are present and NOT already assigned to any location are paired.
         """
+        work_day = daily_location.work_day
         attendances = AttendanceRecord.objects.filter(date=work_day.date, status='present')
         present_employees = [a.employee for a in attendances]
 
-        # Only skip employees already in THIS daily_location
+        # Skip employees already assigned to ANY location on this work day
         assigned_photographers = DailyTeam.objects.filter(
-            daily_location=daily_location
+            daily_location__work_day=work_day
         ).values_list('photographer_id', flat=True)
 
         assigned_clowns = DailyTeam.objects.filter(
-            daily_location=daily_location
+            daily_location__work_day=work_day
         ).values_list('clown_id', flat=True)
 
         photographers = [e for e in present_employees if e.role == 'photographer' and e.id not in assigned_photographers]
