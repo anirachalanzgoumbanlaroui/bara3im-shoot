@@ -175,9 +175,6 @@ class WorkDaySerializer(serializers.ModelSerializer):
         return value
 
     def to_representation(self, instance):
-        # Ensure all seeded locations (Ardis, Sablette) automatically exist for this work day
-        for loc in Location.objects.all():
-            DailyLocation.objects.get_or_create(work_day=instance, location=loc)
         if hasattr(instance, '_prefetched_objects_cache'):
             instance._prefetched_objects_cache = {}
         return super().to_representation(instance)
