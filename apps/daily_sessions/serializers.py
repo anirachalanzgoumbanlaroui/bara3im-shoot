@@ -1,5 +1,6 @@
 from rest_framework import serializers
-from .models import Location, DailyLocation, WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog, SellerDailyOperation
+from django.utils import timezone
+from .models import Location, WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog, SellerDailyOperation
 from .services import DailyOperationsService
 
 
@@ -17,7 +18,7 @@ class DailyEmployeePerformanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailyEmployeePerformance
         fields = [
-            'id', 'employee', 'employee_name', 'employee_role', 'work_day', 'daily_location', 'team',
+            'id', 'employee', 'employee_name', 'employee_role', 'work_day', 'team',
             'photo_count', 'adjustment_type', 'adjustment_reason', 'daily_earnings',
             'created_at', 'updated_at'
         ]
@@ -46,7 +47,7 @@ class DailyTeamSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailyTeam
         fields = [
-            'id', 'daily_location', 'photographer', 'photographer_name',
+            'id', 'work_day', 'photographer', 'photographer_name',
             'clown', 'clown_name', 'team_name', 'team_photo_count',
             'performances', 'created_at', 'updated_at'
         ]
@@ -61,32 +62,35 @@ class DailyTeamSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         photographer = attrs.get('photographer')
         clown = attrs.get('clown')
-        daily_location = attrs.get('daily_location')
+        work_day = attrs.get('work_day')
 
         if photographer and photographer.role != 'photographer':
             raise serializers.ValidationError({"photographer": "Must have role 'photographer'."})
         if clown and clown.role != 'clown':
             raise serializers.ValidationError({"clown": "Must have role 'clown'."})
 
-        if daily_location:
-            # Only prevent duplicate assignment WITHIN the same daily location
-            conflict_photo = DailyTeam.objects.filter(
-                daily_location=daily_location,
-                photographer=photographer
-            )
-            if self.instance:
-                conflict_photo = conflict_photo.exclude(pk=self.instance.pk)
-            if conflict_photo.exists():
-                raise serializers.ValidationError({"photographer": f"{photographer.first_name} is already in a team at this location."})
+        if work_day:
+            if photographer:
+                conflict_photo = DailyTeam.objects.filter(
+                    work_day=work_day, photographer=photographer
+                )
+                if self.instance:
+                    conflict_photo = conflict_photo.exclude(pk=self.instance.pk)
+                if conflict_photo.exists():
+                    raise serializers.ValidationError(
+                        {"photographer": f"{photographer.first_name} is already in a team today."}
+                    )
 
-            conflict_clown = DailyTeam.objects.filter(
-                daily_location=daily_location,
-                clown=clown
-            )
-            if self.instance:
-                conflict_clown = conflict_clown.exclude(pk=self.instance.pk)
-            if conflict_clown.exists():
-                raise serializers.ValidationError({"clown": f"{clown.first_name} is already in a team at this location."})
+            if clown:
+                conflict_clown = DailyTeam.objects.filter(
+                    work_day=work_day, clown=clown
+                )
+                if self.instance:
+                    conflict_clown = conflict_clown.exclude(pk=self.instance.pk)
+                if conflict_clown.exists():
+                    raise serializers.ValidationError(
+                        {"clown": f"{clown.first_name} is already in a team today."}
+                    )
 
         return attrs
 
@@ -97,7 +101,7 @@ class SellerDailyOperationSerializer(serializers.ModelSerializer):
     class Meta:
         model = SellerDailyOperation
         fields = [
-            'id', 'seller', 'seller_name', 'daily_location',
+            'id', 'seller', 'seller_name', 'work_day',
             'amount', 'notes', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -112,54 +116,44 @@ class SellerDailyOperationSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         seller = attrs.get('seller')
-        daily_location = attrs.get('daily_location')
+        work_day = attrs.get('work_day')
 
         if seller and seller.role != 'seller':
             raise serializers.ValidationError({"seller": "Must have role 'seller'."})
 
-        if daily_location:
-            work_day = daily_location.work_day
+        if seller and work_day:
             conflict = SellerDailyOperation.objects.filter(
-                daily_location__work_day=work_day,
-                seller=seller
+                work_day=work_day, seller=seller
             )
             if self.instance:
                 conflict = conflict.exclude(pk=self.instance.pk)
             if conflict.exists():
-                raise serializers.ValidationError({"seller": f"{seller.first_name} is already assigned to another location today."})
+                raise serializers.ValidationError(
+                    {"seller": f"{seller.first_name} already has an operation today."}
+                )
 
         return attrs
 
 
-class DailyLocationSerializer(serializers.ModelSerializer):
+class WorkDaySerializer(serializers.ModelSerializer):
     location = LocationSerializer(read_only=True)
     location_id = serializers.PrimaryKeyRelatedField(
         queryset=Location.objects.all(), source='location', write_only=True
     )
     teams = DailyTeamSerializer(many=True, read_only=True)
     seller_operations = SellerDailyOperationSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = DailyLocation
-        fields = [
-            'id', 'work_day', 'location', 'location_id',
-            'notes', 'teams', 'seller_operations', 'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'teams', 'seller_operations']
-
-
-class WorkDaySerializer(serializers.ModelSerializer):
-    daily_locations = DailyLocationSerializer(many=True, read_only=True)
     created_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkDay
         fields = [
-            'id', 'date', 'photographer_unit_price', 'clown_unit_price',
+            'id', 'location', 'location_id', 'date', 'status',
+            'photographer_unit_price', 'clown_unit_price',
             'notes', 'created_by', 'created_by_name',
-            'daily_locations', 'created_at', 'updated_at'
+            'teams', 'seller_operations',
+            'created_at', 'updated_at', 'closed_at'
         ]
-        read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_by', 'created_at', 'updated_at', 'closed_at']
 
     def get_created_by_name(self, obj):
         return obj.created_by.username if obj.created_by else None
@@ -180,25 +174,36 @@ class WorkDaySerializer(serializers.ModelSerializer):
         return super().to_representation(instance)
 
     def create(self, validated_data):
+        location = validated_data['location']
+        date = validated_data['date']
+
+        existing = WorkDay.objects.filter(location=location, date=date).first()
+        if existing:
+            return existing
+
         validated_data['created_by'] = self.context['request'].user
         work_day = super().create(validated_data)
-        
-        # Auto-create DailyLocation entries for all seeded locations (Ardis, Sablette)
-        # to ensure the day is immediately ready to receive assignments.
-        for loc in Location.objects.all():
-            DailyLocation.objects.get_or_create(work_day=work_day, location=loc)
 
-        DailyOperationsService.log_action(work_day, "Work Day Created", self.context['request'].user)
+        DailyOperationsService.log_action(
+            work_day, "Work Day Created", self.context['request'].user,
+            {"location": location.name, "date": str(date)}
+        )
         return work_day
 
 
 class WorkDayListSerializer(serializers.ModelSerializer):
+    location_name = serializers.SerializerMethodField()
+
     class Meta:
         model = WorkDay
         fields = [
-            'id', 'date', 'photographer_unit_price', 'clown_unit_price',
+            'id', 'location', 'location_name', 'date', 'status',
+            'photographer_unit_price', 'clown_unit_price',
             'notes', 'created_at', 'updated_at'
         ]
+
+    def get_location_name(self, obj):
+        return obj.location.name if obj.location else None
 
 
 class DailyOperationLogSerializer(serializers.ModelSerializer):

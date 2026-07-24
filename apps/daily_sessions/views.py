@@ -1,14 +1,13 @@
-import os
-import subprocess
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 
-from .models import Location, DailyLocation, WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog, SellerDailyOperation
+from .models import Location, WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog, SellerDailyOperation
 from .serializers import (
-    LocationSerializer, DailyLocationSerializer,
+    LocationSerializer,
     WorkDaySerializer, WorkDayListSerializer,
     DailyTeamSerializer, DailyEmployeePerformanceSerializer,
     DailyOperationLogSerializer, SellerDailyOperationSerializer
@@ -23,39 +22,8 @@ class LocationViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
 
 
-class DailyLocationViewSet(viewsets.ModelViewSet):
-    queryset = DailyLocation.objects.all()
-    serializer_class = DailyLocationSerializer
-    permission_classes = [IsAuthenticated]
-    filterset_fields = ['work_day', 'location']
-
-    def create(self, request, *args, **kwargs):
-        work_day_id = request.data.get('work_day')
-        location_id = request.data.get('location_id') or request.data.get('location')
-        if work_day_id and location_id:
-            daily_loc, created = DailyLocation.objects.get_or_create(
-                work_day_id=work_day_id,
-                location_id=location_id
-            )
-            serializer = self.get_serializer(daily_loc)
-            return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
-        return super().create(request, *args, **kwargs)
-
-    @action(detail=True, methods=['post'])
-    def generate_teams(self, request, pk=None):
-        daily_location = self.get_object()
-        teams_created = DailyOperationsService.generate_teams(daily_location, request.user)
-        return Response({"detail": f"Generated {teams_created} teams.", "teams_created": teams_created})
-
-    @action(detail=True, methods=['post'])
-    def copy_yesterday(self, request, pk=None):
-        daily_location = self.get_object()
-        teams_copied = DailyOperationsService.copy_yesterday_teams(daily_location, request.user)
-        return Response({"detail": f"Copied {teams_copied} teams.", "teams_copied": teams_copied})
-
-
 class WorkDayViewSet(viewsets.ModelViewSet):
-    queryset = WorkDay.objects.all()
+    queryset = WorkDay.objects.select_related('location', 'created_by').all()
     permission_classes = [IsAuthenticated]
 
     def get_serializer_class(self):
@@ -67,14 +35,17 @@ class WorkDayViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
         location_id = self.request.query_params.get('location')
         if location_id:
-            qs = qs.filter(daily_locations__location_id=location_id)
+            qs = qs.filter(location_id=location_id)
         date_from = self.request.query_params.get('date_from')
         if date_from:
             qs = qs.filter(date__gte=date_from)
         date_to = self.request.query_params.get('date_to')
         if date_to:
             qs = qs.filter(date__lte=date_to)
-        return qs.distinct()
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
 
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
@@ -88,18 +59,43 @@ class WorkDayViewSet(viewsets.ModelViewSet):
         DailyOperationsService.recalculate_work_day(work_day, request.user)
         return Response(self.get_serializer(work_day).data)
 
+    @action(detail=True, methods=['post'])
+    def generate_teams(self, request, pk=None):
+        work_day = self.get_object()
+        teams_created = DailyOperationsService.generate_teams(work_day, request.user)
+        return Response({"detail": f"Generated {teams_created} teams.", "teams_created": teams_created})
+
+    @action(detail=True, methods=['post'])
+    def copy_yesterday(self, request, pk=None):
+        work_day = self.get_object()
+        teams_copied = DailyOperationsService.copy_yesterday_teams(work_day, request.user)
+        return Response({"detail": f"Copied {teams_copied} teams.", "teams_copied": teams_copied})
+
+    @action(detail=True, methods=['post'])
+    def close(self, request, pk=None):
+        work_day = self.get_object()
+        if work_day.status == WorkDay.Status.CLOSED:
+            return Response({"detail": "Work day is already closed."}, status=status.HTTP_400_BAD_REQUEST)
+        work_day.status = WorkDay.Status.CLOSED
+        work_day.closed_at = timezone.now()
+        work_day.save(update_fields=['status', 'closed_at', 'updated_at'])
+        DailyOperationsService.log_action(
+            work_day, "Work Day Closed", request.user,
+            {"location": work_day.location.name}
+        )
+        return Response(self.get_serializer(work_day).data)
+
 
 class DailyTeamViewSet(viewsets.ModelViewSet):
-    queryset = DailyTeam.objects.all()
+    queryset = DailyTeam.objects.select_related('photographer', 'clown', 'work_day').all()
     serializer_class = DailyTeamSerializer
     permission_classes = [IsAuthenticated]
-    filterset_fields = ['daily_location', 'daily_location__work_day']
+    filterset_fields = ['work_day']
 
     def perform_create(self, serializer):
         team = serializer.save()
-        work_day = team.daily_location.work_day
-        
-        # Create performance records so earnings are tracked and cascade correctly
+        work_day = team.work_day
+
         DailyEmployeePerformance.objects.get_or_create(
             work_day=work_day,
             employee=team.photographer,
@@ -107,7 +103,6 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
                 'team': team,
                 'photo_count': team.team_photo_count,
                 'adjustment_type': DailyEmployeePerformance.AdjustmentType.AUTOMATIC,
-                'daily_location': team.daily_location
             }
         )
         DailyEmployeePerformance.objects.get_or_create(
@@ -117,31 +112,34 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
                 'team': team,
                 'photo_count': team.team_photo_count,
                 'adjustment_type': DailyEmployeePerformance.AdjustmentType.AUTOMATIC,
-                'daily_location': team.daily_location
             }
         )
-        
+
         DailyOperationsService.log_action(
-            work_day, "Team Created", self.request.user, 
-            {"team_id": str(team.id), "team_name": team.team_name, "location": team.daily_location.location.name}
+            work_day, "Team Created", self.request.user,
+            {
+                "team_id": str(team.id),
+                "team_name": team.team_name,
+                "location": work_day.location.name,
+            }
         )
 
     def perform_update(self, serializer):
         team = serializer.save()
         DailyOperationsService.log_action(
-            team.daily_location.work_day, "Team Edited", self.request.user, 
-            {"team_id": str(team.id), "location": team.daily_location.location.name}
+            team.work_day, "Team Edited", self.request.user,
+            {"team_id": str(team.id), "location": team.work_day.location.name}
         )
 
     @action(detail=False, methods=['post'], url_path='quick-entry')
     def quick_entry(self, request):
-        """
-        Accepts a list of dictionaries: [{"id": "uuid", "team_photo_count": 100}, ...]
-        """
         data = request.data
         if not isinstance(data, list):
-            return Response({"detail": "Expected a list of updates."}, status=status.HTTP_400_BAD_REQUEST)
-            
+            return Response(
+                {"detail": "Expected a list of updates."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         updated_teams = []
         for item in data:
             team_id = item.get('id')
@@ -149,47 +147,59 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
             if team_id and new_count is not None:
                 team = get_object_or_404(DailyTeam, id=team_id)
                 DailyOperationsService.quick_entry_update_team(team, int(new_count), request.user)
-                updated_teams.append(team.id)
-                
+                updated_teams.append(str(team.id))
+
         return Response({"detail": f"Updated {len(updated_teams)} teams."})
 
 
 class DailyEmployeePerformanceViewSet(viewsets.ModelViewSet):
-    queryset = DailyEmployeePerformance.objects.all()
+    queryset = DailyEmployeePerformance.objects.select_related(
+        'employee', 'work_day', 'team'
+    ).all()
     serializer_class = DailyEmployeePerformanceSerializer
     permission_classes = [IsAuthenticated]
-    filterset_fields = ['work_day', 'daily_location', 'team', 'employee']
+    filterset_fields = ['work_day', 'team', 'employee']
 
     def perform_update(self, serializer):
         perf = serializer.save()
         DailyOperationsService.log_action(
             perf.work_day, "Employee Performance Updated", self.request.user,
-            {"performance_id": str(perf.id), "employee": perf.employee.first_name, "type": perf.adjustment_type, "location": perf.daily_location.location.name if perf.daily_location else None}
+            {
+                "performance_id": str(perf.id),
+                "employee": perf.employee.first_name,
+                "type": perf.adjustment_type,
+                "location": perf.work_day.location.name,
+            }
         )
 
 
 class DailyOperationLogViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = DailyOperationLog.objects.all()
+    queryset = DailyOperationLog.objects.select_related('work_day', 'user').all()
     serializer_class = DailyOperationLogSerializer
     permission_classes = [IsAuthenticated]
     filterset_fields = ['work_day']
 
 
 class SellerDailyOperationViewSet(viewsets.ModelViewSet):
-    queryset = SellerDailyOperation.objects.all()
+    queryset = SellerDailyOperation.objects.select_related(
+        'seller', 'work_day', 'work_day__location'
+    ).all()
     serializer_class = SellerDailyOperationSerializer
     permission_classes = [IsAuthenticated]
-    filterset_fields = ['daily_location', 'daily_location__work_day', 'seller']
+    filterset_fields = ['work_day', 'seller']
 
     @action(detail=False, methods=['post'], url_path='bulk-save')
     def bulk_save(self, request):
-        daily_location_id = request.data.get('daily_location')
+        work_day_id = request.data.get('work_day')
         operations_data = request.data.get('operations', [])
 
-        if not daily_location_id:
-            return Response({"detail": "daily_location is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not work_day_id:
+            return Response(
+                {"detail": "work_day is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        daily_location = get_object_or_404(DailyLocation, id=daily_location_id)
+        work_day = get_object_or_404(WorkDay, id=work_day_id)
         saved_seller_ids = []
 
         for op in operations_data:
@@ -202,25 +212,22 @@ class SellerDailyOperationViewSet(viewsets.ModelViewSet):
 
             seller = get_object_or_404(Employee, id=seller_id, role='seller')
 
-            # Update or create
             operation, created = SellerDailyOperation.objects.update_or_create(
-                daily_location=daily_location,
+                work_day=work_day,
                 seller=seller,
-                defaults={
-                    'amount': amount,
-                    'notes': notes
-                }
+                defaults={'amount': amount, 'notes': notes}
             )
-            saved_seller_ids.append(seller.id)
+            saved_seller_ids.append(str(seller.id))
 
-        # Delete operations that are not in the list anymore for this specific location
-        SellerDailyOperation.objects.filter(daily_location=daily_location).exclude(seller_id__in=saved_seller_ids).delete()
+        SellerDailyOperation.objects.filter(
+            work_day=work_day
+        ).exclude(seller_id__in=saved_seller_ids).delete()
 
         DailyOperationsService.log_action(
-            daily_location.work_day, "Seller Earnings Bulk Saved", request.user,
-            {"count": len(saved_seller_ids), "location": daily_location.location.name}
+            work_day, "Seller Earnings Bulk Saved", request.user,
+            {"count": len(saved_seller_ids), "location": work_day.location.name}
         )
 
-        updated_ops = SellerDailyOperation.objects.filter(daily_location=daily_location)
+        updated_ops = SellerDailyOperation.objects.filter(work_day=work_day)
         serializer = self.get_serializer(updated_ops, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

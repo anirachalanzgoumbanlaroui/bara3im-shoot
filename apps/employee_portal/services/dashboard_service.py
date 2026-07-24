@@ -14,10 +14,10 @@ class EmployeeDashboardService:
     def get_dashboard_data(employee):
         today = date.today()
         role = employee.role
-        
+
         if role == 'seller':
             return EmployeeDashboardService.get_seller_dashboard_data(employee)
-        
+
         # 1. Today's Attendance
         attendance = AttendanceRecord.objects.filter(employee=employee, date=today).first()
         attendance_data = {
@@ -27,58 +27,58 @@ class EmployeeDashboardService:
         }
 
         # 2. Today's Performance & Team
-        performance = DailyEmployeePerformance.objects.filter(employee=employee, work_day__date=today).first()
-        
+        performance = DailyEmployeePerformance.objects.filter(
+            employee=employee, work_day__date=today
+        ).select_related('work_day', 'work_day__location', 'team', 'team__photographer', 'team__clown').first()
+
         team_data = None
         performance_data = None
         today_location = None
-        
+
         if performance:
-            if performance.daily_location:
-                today_location = {
-                    'id': str(performance.daily_location.location.id),
-                    'name': performance.daily_location.location.name,
-                    'icon': performance.daily_location.location.icon,
-                    'color_hex': performance.daily_location.location.color_hex,
-                }
+            wd = performance.work_day
+            today_location = {
+                'id': str(wd.location.id),
+                'name': wd.location.name,
+                'icon': wd.location.icon,
+                'color_hex': wd.location.color_hex,
+            }
             team = performance.team
             team_data = {
                 'team_name': team.team_name,
                 'photographer': f"{team.photographer.first_name} {team.photographer.last_name}",
                 'clown': f"{team.clown.first_name} {team.clown.last_name}",
             }
-            
-            work_day = performance.work_day
-            unit_price = work_day.photographer_unit_price if role == 'photographer' else work_day.clown_unit_price
+
+            unit_price = wd.photographer_unit_price if role == 'photographer' else wd.clown_unit_price
             earnings = float(performance.photo_count * unit_price)
-            
+
             performance_data = {
                 'photo_count': performance.photo_count,
                 'earnings': earnings,
                 'unit_price': float(unit_price)
             }
-        
+
         # 3. Financial Summary
-        # Gross Earnings (Sum of all-time daily performances)
-        all_performances = DailyEmployeePerformance.objects.filter(employee=employee).select_related('work_day')
+        all_performances = DailyEmployeePerformance.objects.filter(
+            employee=employee
+        ).select_related('work_day')
         gross_earnings = 0.0
         for p in all_performances:
             u_price = p.work_day.photographer_unit_price if role == 'photographer' else p.work_day.clown_unit_price
             gross_earnings += float(p.photo_count * u_price)
-            
-        # Late Penalties (late records count * active_rule.late_deduction_amount)
+
         late_records_count = AttendanceRecord.objects.filter(employee=employee, status='late').count()
         active_rule = AttendanceRule.get_active_rule()
         late_deduction_amount = float(active_rule.late_deduction_amount) if active_rule else 0.0
         late_penalties = float(late_records_count * late_deduction_amount)
-        
-        # Bonuses, Advances, Deductions
+
         bonuses = float(Bonus.objects.filter(employee=employee).aggregate(total=Sum('amount'))['total'] or 0.0)
         advances = float(Advance.objects.filter(employee=employee).aggregate(total=Sum('amount'))['total'] or 0.0)
         deductions = float(Deduction.objects.filter(employee=employee).aggregate(total=Sum('amount'))['total'] or 0.0)
-        
+
         net_balance = gross_earnings + bonuses - late_penalties - advances - deductions
-        
+
         financial_summary = {
             'gross_earnings': gross_earnings,
             'late_penalties': late_penalties,
@@ -87,31 +87,36 @@ class EmployeeDashboardService:
             'deductions': deductions,
             'net_balance': net_balance,
         }
-        
+
         # 4. Today's Progress
         goal = 50
         today_photos = performance.photo_count if performance else 0
         progress_percentage = float(today_photos) / goal if goal > 0 else 0.0
-        
+
         unit_price_today = 0.0
         if performance:
-            unit_price_today = float(performance.work_day.photographer_unit_price if role == 'photographer' else performance.work_day.clown_unit_price)
+            unit_price_today = float(
+                performance.work_day.photographer_unit_price if role == 'photographer'
+                else performance.work_day.clown_unit_price
+            )
         else:
-            # Fallback to most recent work day price
             latest_workday = WorkDay.objects.order_by('-date').first()
             if latest_workday:
-                unit_price_today = float(latest_workday.photographer_unit_price if role == 'photographer' else latest_workday.clown_unit_price)
-                
+                unit_price_today = float(
+                    latest_workday.photographer_unit_price if role == 'photographer'
+                    else latest_workday.clown_unit_price
+                )
+
         estimated_earnings = float(today_photos * unit_price_today)
         remaining_photos = max(0, goal - today_photos)
-        
+
         if today_photos == 0:
             progress_msg = "Let's start strong today!"
         elif today_photos < goal:
             progress_msg = f"Only {remaining_photos} photos remaining to hit today's goal!"
         else:
             progress_msg = "Excellent! You exceeded today's goal."
-            
+
         today_progress = {
             'photos': today_photos,
             'goal': goal,
@@ -120,10 +125,10 @@ class EmployeeDashboardService:
             'remaining_photos': remaining_photos,
             'status_message': progress_msg,
         }
-        
+
         # 5. Dynamic Motivation Messages
         motivation_payload = MotivationService.get_message(attendance, performance, goal)
-        
+
         # 6. Streak Calculations
         all_att_asc = list(AttendanceRecord.objects.filter(employee=employee).order_by('date'))
         current_att_streak = 0
@@ -145,7 +150,7 @@ class EmployeeDashboardService:
             current_att_streak = temp_streak
         else:
             current_att_streak = 0
-            
+
         # On-time Streak
         current_on_time_streak = 0
         longest_on_time_streak = 0
@@ -166,9 +171,12 @@ class EmployeeDashboardService:
             current_on_time_streak = temp_ot_streak
         else:
             current_on_time_streak = 0
-            
+
         # Goal Streak
-        all_perf_asc = list(DailyEmployeePerformance.objects.filter(employee=employee).select_related('work_day').order_by('work_day__date'))
+        all_perf_asc = list(
+            DailyEmployeePerformance.objects.filter(employee=employee)
+            .select_related('work_day').order_by('work_day__date')
+        )
         current_goal_streak = 0
         longest_goal_streak = 0
         temp_g_streak = 0
@@ -188,7 +196,7 @@ class EmployeeDashboardService:
             current_goal_streak = temp_g_streak
         else:
             current_goal_streak = 0
-            
+
         # 7. Goals & Challenges
         goals_challenges = [
             {
@@ -244,13 +252,11 @@ class EmployeeDashboardService:
         ]
 
         # 8. Achievement Badges
-        # Unlocked dates helper
         worked_days = len(all_perf_asc)
         max_photos_single_day = max([p.photo_count for p in all_perf_asc]) if all_perf_asc else 0
         total_photos = sum([p.photo_count for p in all_perf_asc]) if all_perf_asc else 0
         days_exceeding_goal = len([p for p in all_perf_asc if p.photo_count >= 50])
-        
-        # Max photos in a single month
+
         monthly_totals = DailyEmployeePerformance.objects.filter(employee=employee).annotate(
             month=ExtractMonth('work_day__date'),
             year=ExtractYear('work_day__date')
@@ -258,8 +264,7 @@ class EmployeeDashboardService:
             total_photos=Sum('photo_count')
         )
         max_photos_single_month = max([m['total_photos'] for m in monthly_totals]) if monthly_totals else 0
-        
-        # Perfect Attendance rate calculation
+
         attendance_stats = AttendanceRecord.objects.filter(employee=employee).aggregate(
             total=Count('id'),
             absent=Count('id', filter=Q(status='absent'))
@@ -267,7 +272,7 @@ class EmployeeDashboardService:
         total_attendance_days = attendance_stats['total'] or 0
         absent_days_count = attendance_stats['absent'] or 0
         has_perfect_att = (total_attendance_days >= 10 and absent_days_count == 0)
-        
+
         achievement_badges = [
             {
                 'id': 'badge_first_day',
@@ -284,7 +289,9 @@ class EmployeeDashboardService:
                 'description': 'Took 100 or more photos in a single shift.',
                 'icon': 'photos_100',
                 'is_unlocked': max_photos_single_day >= 100,
-                'unlocked_date': next((p.work_day.date.isoformat() for p in all_perf_asc if p.photo_count >= 100), None) if max_photos_single_day >= 100 else None,
+                'unlocked_date': next(
+                    (p.work_day.date.isoformat() for p in all_perf_asc if p.photo_count >= 100), None
+                ) if max_photos_single_day >= 100 else None,
                 'progress': min(1.0, float(max_photos_single_day) / 100.0),
             },
             {
@@ -293,7 +300,7 @@ class EmployeeDashboardService:
                 'description': 'Reached 1000 photos inside a single month.',
                 'icon': 'monthly_1000',
                 'is_unlocked': max_photos_single_month >= 1000,
-                'unlocked_date': None, # hard to trace easily, return null
+                'unlocked_date': None,
                 'progress': min(1.0, float(max_photos_single_month) / 1000.0),
             },
             {
@@ -335,12 +342,10 @@ class EmployeeDashboardService:
         ]
 
         # 9. Personal Records
-        # Best day
         best_day_perf = DailyEmployeePerformance.objects.filter(employee=employee).order_by('-photo_count').first()
         best_day_val = best_day_perf.photo_count if best_day_perf else 0
         best_day_date = best_day_perf.work_day.date.isoformat() if best_day_perf else None
-        
-        # Highest Daily Earnings
+
         best_earnings_val = 0.0
         best_earnings_date = None
         for p in all_perf_asc:
@@ -349,17 +354,18 @@ class EmployeeDashboardService:
             if earns > best_earnings_val:
                 best_earnings_val = earns
                 best_earnings_date = p.work_day.date.isoformat()
-                
-        # Best Month
+
         best_month_rec = monthly_totals.order_by('-total_photos').first()
         best_month_val = ""
         best_month_photos = 0
         if best_month_rec:
-            months_names = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+            months_names = [
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"
+            ]
             best_month_val = f"{months_names[best_month_rec['month'] - 1]} {best_month_rec['year']}"
             best_month_photos = best_month_rec['total_photos']
 
-        # Near record highlight
         near_record = None
         if today_photos < best_day_val and (best_day_val - today_photos) <= 5:
             near_record = {
@@ -368,7 +374,7 @@ class EmployeeDashboardService:
                 'remaining': best_day_val - today_photos,
                 'message': f"Only {best_day_val - today_photos} more photos to beat your best day ({best_day_val} photos)!",
             }
-            
+
         personal_records = {
             'best_day': {'value': float(best_day_val), 'date': best_day_date, 'label': 'Photos'},
             'highest_photos': {'value': float(best_day_val), 'date': best_day_date, 'label': 'Photos'},
@@ -380,53 +386,55 @@ class EmployeeDashboardService:
         }
 
         # 10. Smart Insights
-        # Yesterday's performance comparison
         smart_insights = []
         yesterday = today - timedelta(days=1)
-        yesterday_perf = DailyEmployeePerformance.objects.filter(employee=employee, work_day__date=yesterday).first()
+        yesterday_perf = DailyEmployeePerformance.objects.filter(
+            employee=employee, work_day__date=yesterday
+        ).first()
         if yesterday_perf:
             diff = today_photos - yesterday_perf.photo_count
             if diff > 0:
                 smart_insights.append(f"You improved by {diff} photos compared to yesterday!")
             elif diff < 0:
                 smart_insights.append(f"You are {abs(diff)} photos away from matching yesterday's performance.")
-                
-        # Last week's earnings comparison
+
         start_of_week = today - timedelta(days=today.weekday())
         start_of_last_week = start_of_week - timedelta(days=7)
         end_of_last_week = start_of_week - timedelta(days=1)
-        
+
         this_week_earnings = 0.0
-        this_week_perfs = DailyEmployeePerformance.objects.filter(employee=employee, work_day__date__gte=start_of_week, work_day__date__lte=today)
+        this_week_perfs = DailyEmployeePerformance.objects.filter(
+            employee=employee, work_day__date__gte=start_of_week, work_day__date__lte=today
+        )
         for p in this_week_perfs:
             u_price = p.work_day.photographer_unit_price if role == 'photographer' else p.work_day.clown_unit_price
             this_week_earnings += float(p.photo_count * u_price)
-            
+
         last_week_earnings = 0.0
-        last_week_perfs = DailyEmployeePerformance.objects.filter(employee=employee, work_day__date__gte=start_of_last_week, work_day__date__lte=end_of_last_week)
+        last_week_perfs = DailyEmployeePerformance.objects.filter(
+            employee=employee, work_day__date__gte=start_of_last_week, work_day__date__lte=end_of_last_week
+        )
         for p in last_week_perfs:
             u_price = p.work_day.photographer_unit_price if role == 'photographer' else p.work_day.clown_unit_price
             last_week_earnings += float(p.photo_count * u_price)
-            
+
         if last_week_earnings > 0:
             increase = ((this_week_earnings - last_week_earnings) / last_week_earnings) * 100.0
             if increase > 0:
                 smart_insights.append(f"You earned {increase:.1f}% more than last week.")
-                
-        # Attendance comment
+
         if total_attendance_days > 0:
             att_rate = float(total_attendance_days - absent_days_count) / total_attendance_days * 100.0
             if att_rate >= 90.0:
                 smart_insights.append("Your attendance is excellent! Keep up the good work.")
-                
-        # Goal proximity comment
+
         if today_photos < goal:
             rem = goal - today_photos
             if rem <= 10:
                 smart_insights.append(f"You're only {rem} photos away from today's goal!")
         else:
             smart_insights.append("Goal achieved today! Spectacular!")
-            
+
         if not smart_insights:
             smart_insights.append("Start adding photos to see daily insights and track your growth.")
             smart_insights.append("Check in daily to build up your attendance streak and earn badges!")
@@ -444,9 +452,8 @@ class EmployeeDashboardService:
                 'icon': n.icon or 'bell',
             })
 
-        # Dashboard greeting
         greeting = f"Welcome back, {employee.first_name}!"
-        
+
         return {
             'greeting': greeting,
             'employee_name': f"{employee.first_name} {employee.last_name}",
@@ -470,43 +477,44 @@ class EmployeeDashboardService:
     def get_seller_dashboard_data(employee):
         from apps.daily_sessions.models import SellerDailyOperation
         today = date.today()
-        
-        # 1. Fetch operations
-        ops = list(SellerDailyOperation.objects.filter(seller=employee).order_by('daily_location__work_day__date'))
-        
-        # Today's operation
-        today_op = SellerDailyOperation.objects.filter(seller=employee, daily_location__work_day__date=today).first()
+
+        ops = list(
+            SellerDailyOperation.objects.filter(seller=employee)
+            .select_related('work_day', 'work_day__location')
+            .order_by('work_day__date')
+        )
+
+        today_op = SellerDailyOperation.objects.filter(
+            seller=employee, work_day__date=today
+        ).select_related('work_day', 'work_day__location').first()
         today_earnings = float(today_op.amount) if today_op else None
-        
+
         today_location = None
-        if today_op and today_op.daily_location:
+        if today_op and today_op.work_day:
             today_location = {
-                'id': str(today_op.daily_location.location.id),
-                'name': today_op.daily_location.location.name,
-                'icon': today_op.daily_location.location.icon,
-                'color_hex': today_op.daily_location.location.color_hex,
+                'id': str(today_op.work_day.location.id),
+                'name': today_op.work_day.location.name,
+                'icon': today_op.work_day.location.icon,
+                'color_hex': today_op.work_day.location.color_hex,
             }
-            
-        # Monthly earnings
+
         start_of_month = today.replace(day=1)
         monthly_earnings = float(SellerDailyOperation.objects.filter(
-            seller=employee, 
-            daily_location__work_day__date__gte=start_of_month,
-            daily_location__work_day__date__lte=today
+            seller=employee,
+            work_day__date__gte=start_of_month,
+            work_day__date__lte=today
         ).aggregate(total=Sum('amount'))['total'] or 0.0)
-        
-        # Lifetime earnings
+
         lifetime_earnings = float(SellerDailyOperation.objects.filter(
             seller=employee
         ).aggregate(total=Sum('amount'))['total'] or 0.0)
-        
-        # Streaks
+
         current_streak = 0
         longest_streak = 0
         temp_streak = 0
         prev_date = None
         for op in ops:
-            d = op.daily_location.work_day.date
+            d = op.work_day.date
             if prev_date is None:
                 temp_streak = 1
             else:
@@ -521,24 +529,22 @@ class EmployeeDashboardService:
             current_streak = temp_streak
         else:
             current_streak = 0
-            
-        # Highest day
-        highest_day_val = float(SellerDailyOperation.objects.filter(seller=employee).aggregate(max_val=Max('amount'))['max_val'] or 0.0)
-        
-        # Total working days
+
+        highest_day_val = float(SellerDailyOperation.objects.filter(
+            seller=employee
+        ).aggregate(max_val=Max('amount'))['max_val'] or 0.0)
+
         total_working_days = len(ops)
-        
-        # History (last 10 ops)
+
         history_list = []
         for op in reversed(ops[-10:]):
             history_list.append({
                 'id': str(op.id),
-                'date': op.daily_location.work_day.date.isoformat(),
+                'date': op.work_day.date.isoformat(),
                 'amount': float(op.amount),
                 'notes': op.notes or ''
             })
-            
-        # Achievements badges
+
         achievements = [
             {
                 'id': 'first_sale',
@@ -581,8 +587,7 @@ class EmployeeDashboardService:
                 'progress': min(1.0, float(total_working_days) / 30.0)
             }
         ]
-        
-        # Hall of closers
+
         hall_of_closers = {
             'highest_day': highest_day_val,
             'longest_streak': longest_streak,
@@ -590,8 +595,7 @@ class EmployeeDashboardService:
             'lifetime_earnings': lifetime_earnings,
             'favorite_quote': 'Consistency beats motivation.'
         }
-        
-        # Motivational banner
+
         if today_earnings is None:
             motivational_message = "No operations today yet."
         elif today_earnings < 4000:
@@ -602,8 +606,7 @@ class EmployeeDashboardService:
             motivational_message = "You're printing money today."
         else:
             motivational_message = "Leave some commissions for tomorrow 😂"
-            
-        # Recent notifications
+
         notifications = Notification.objects.filter(user=employee.user).order_by('-timestamp')[:5]
         notification_preview = []
         for n in notifications:
@@ -615,7 +618,7 @@ class EmployeeDashboardService:
                 'is_read': n.is_read,
                 'icon': n.icon or 'bell',
             })
-            
+
         return {
             'greeting': f"Welcome back, {employee.first_name}!",
             'employee_name': f"{employee.first_name} {employee.last_name}",
