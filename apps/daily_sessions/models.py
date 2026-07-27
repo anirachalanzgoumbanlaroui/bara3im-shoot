@@ -64,7 +64,12 @@ class WorkDay(models.Model):
     closed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        unique_together = [('location', 'date')]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["location", "date"],
+                name="unique_workday_location_date",
+            )
+        ]
         ordering = ['-date']
 
     def __str__(self):

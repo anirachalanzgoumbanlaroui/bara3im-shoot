@@ -12,4 +12,4 @@ class HistoryService:
         """Returns queryset of performance records (Work Days) for the employee"""
         return DailyEmployeePerformance.objects.filter(
             employee=employee
-        ).select_related('work_day', 'team', 'team__photographer', 'team__clown').order_by('-work_day__date')
+        ).select_related('work_day', 'work_day__location', 'team', 'team__photographer', 'team__clown').order_by('-work_day__date')

@@ -80,10 +80,12 @@ class EmployeeDashboardViewSet(viewsets.ViewSet):
 
         if employee.role == 'seller':
             from apps.daily_sessions.models import SellerDailyOperation
-            queryset = SellerDailyOperation.objects.filter(seller=employee).select_related('work_day').order_by('-work_day__date')
+            queryset = SellerDailyOperation.objects.filter(seller=employee).select_related('work_day', 'work_day__location').order_by('-work_day__date')
             page = paginator.paginate_queryset(queryset, request)
             data = []
             for op in page:
+                work_day = op.work_day
+                location = work_day.location
                 data.append({
                     'id': str(op.id),
                     'date': op.work_day.date.isoformat(),
@@ -92,7 +94,12 @@ class EmployeeDashboardViewSet(viewsets.ViewSet):
                     'unit_price': 0.0,
                     'adjustment_type': 'manual',
                     'adjustment_reason': op.notes or '',
-                    'team': None
+                    'team': None,
+                    'location': {
+                        'id': str(location.id),
+                        'name': location.name,
+                        'icon': location.icon,
+                    } if location else None,
                 })
             return paginator.get_paginated_response(data)
 
@@ -103,6 +110,7 @@ class EmployeeDashboardViewSet(viewsets.ViewSet):
         for perf in page:
             work_day = perf.work_day
             team = perf.team
+            location = work_day.location
             unit_price = work_day.photographer_unit_price if employee.role == 'photographer' else work_day.clown_unit_price
             
             earnings = float(perf.photo_count * unit_price)
@@ -119,7 +127,12 @@ class EmployeeDashboardViewSet(viewsets.ViewSet):
                     'team_name': team.team_name,
                     'photographer': f"{team.photographer.first_name} {team.photographer.last_name}",
                     'clown': f"{team.clown.first_name} {team.clown.last_name}"
-                }
+                },
+                'location': {
+                    'id': str(location.id),
+                    'name': location.name,
+                    'icon': location.icon,
+                } if location else None,
             })
             
         return paginator.get_paginated_response(data)

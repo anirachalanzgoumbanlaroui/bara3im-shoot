@@ -1,5 +1,6 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
@@ -87,10 +88,22 @@ class WorkDayViewSet(viewsets.ModelViewSet):
 
 
 class DailyTeamViewSet(viewsets.ModelViewSet):
-    queryset = DailyTeam.objects.select_related('photographer', 'clown', 'work_day').all()
+    queryset = DailyTeam.objects.select_related('photographer', 'clown', 'work_day', 'work_day__location').all()
     serializer_class = DailyTeamSerializer
     permission_classes = [IsAuthenticated]
     filterset_fields = ['work_day']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        location_id = self.request.query_params.get('location')
+        if location_id:
+            qs = qs.filter(work_day__location_id=location_id)
+        work_day_id = self.request.query_params.get('work_day')
+        if work_day_id and location_id:
+            work_day = get_object_or_404(WorkDay, id=work_day_id)
+            if str(work_day.location_id) != str(location_id):
+                raise ValidationError("work_day does not belong to the specified location.")
+        return qs
 
     def perform_create(self, serializer):
         team = serializer.save()
@@ -154,11 +167,23 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
 
 class DailyEmployeePerformanceViewSet(viewsets.ModelViewSet):
     queryset = DailyEmployeePerformance.objects.select_related(
-        'employee', 'work_day', 'team'
+        'employee', 'work_day', 'work_day__location', 'team'
     ).all()
     serializer_class = DailyEmployeePerformanceSerializer
     permission_classes = [IsAuthenticated]
     filterset_fields = ['work_day', 'team', 'employee']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        location_id = self.request.query_params.get('location')
+        if location_id:
+            qs = qs.filter(work_day__location_id=location_id)
+        work_day_id = self.request.query_params.get('work_day')
+        if work_day_id and location_id:
+            work_day = get_object_or_404(WorkDay, id=work_day_id)
+            if str(work_day.location_id) != str(location_id):
+                raise ValidationError("work_day does not belong to the specified location.")
+        return qs
 
     def perform_update(self, serializer):
         perf = serializer.save()
@@ -174,10 +199,17 @@ class DailyEmployeePerformanceViewSet(viewsets.ModelViewSet):
 
 
 class DailyOperationLogViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = DailyOperationLog.objects.select_related('work_day', 'user').all()
+    queryset = DailyOperationLog.objects.select_related('work_day', 'work_day__location', 'user').all()
     serializer_class = DailyOperationLogSerializer
     permission_classes = [IsAuthenticated]
     filterset_fields = ['work_day']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        location_id = self.request.query_params.get('location')
+        if location_id:
+            qs = qs.filter(work_day__location_id=location_id)
+        return qs
 
 
 class SellerDailyOperationViewSet(viewsets.ModelViewSet):
@@ -187,6 +219,18 @@ class SellerDailyOperationViewSet(viewsets.ModelViewSet):
     serializer_class = SellerDailyOperationSerializer
     permission_classes = [IsAuthenticated]
     filterset_fields = ['work_day', 'seller']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        location_id = self.request.query_params.get('location')
+        if location_id:
+            qs = qs.filter(work_day__location_id=location_id)
+        work_day_id = self.request.query_params.get('work_day')
+        if work_day_id and location_id:
+            work_day = get_object_or_404(WorkDay, id=work_day_id)
+            if str(work_day.location_id) != str(location_id):
+                raise ValidationError("work_day does not belong to the specified location.")
+        return qs
 
     @action(detail=False, methods=['post'], url_path='bulk-save')
     def bulk_save(self, request):

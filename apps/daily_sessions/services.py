@@ -31,29 +31,31 @@ class DailyOperationsService:
         """
         Auto-generate teams for a work day based on attendance.
         Only photographers/clowns who are present and NOT already assigned
-        to this work day are paired.
+        to ANY work day on this date (across all locations) are paired.
         """
         attendances = AttendanceRecord.objects.filter(
             date=work_day.date, status='present'
         )
         present_employees = [a.employee for a in attendances]
 
-        assigned_photographers = set(
-            DailyTeam.objects.filter(work_day=work_day)
-            .values_list('photographer_id', flat=True)
-        )
-        assigned_clowns = set(
-            DailyTeam.objects.filter(work_day=work_day)
-            .values_list('clown_id', flat=True)
+        # Exclude employees already assigned to ANY work day on this date
+        already_assigned_ids = set(
+            DailyTeam.objects.filter(
+                work_day__date=work_day.date
+            ).values_list('photographer_id', flat=True)
+        ) | set(
+            DailyTeam.objects.filter(
+                work_day__date=work_day.date
+            ).values_list('clown_id', flat=True)
         )
 
         photographers = [
             e for e in present_employees
-            if e.role == 'photographer' and e.id not in assigned_photographers
+            if e.role == 'photographer' and e.id not in already_assigned_ids
         ]
         clowns = [
             e for e in present_employees
-            if e.role == 'clown' and e.id not in assigned_clowns
+            if e.role == 'clown' and e.id not in already_assigned_ids
         ]
 
         teams_created = 0
