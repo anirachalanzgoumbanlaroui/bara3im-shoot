@@ -154,6 +154,7 @@ class WorkDaySerializer(serializers.ModelSerializer):
             'created_at', 'updated_at', 'closed_at'
         ]
         read_only_fields = ['id', 'created_by', 'created_at', 'updated_at', 'closed_at']
+        validators = []
 
     def get_created_by_name(self, obj):
         return obj.created_by.username if obj.created_by else None
