@@ -193,18 +193,15 @@ class WorkDaySerializer(serializers.ModelSerializer):
 
 
 class WorkDayListSerializer(serializers.ModelSerializer):
-    location_name = serializers.SerializerMethodField()
+    location = LocationSerializer(read_only=True)
 
     class Meta:
         model = WorkDay
         fields = [
-            'id', 'location', 'location_name', 'date', 'status',
+            'id', 'location', 'date', 'status',
             'photographer_unit_price', 'clown_unit_price',
             'notes', 'created_at', 'updated_at'
         ]
-
-    def get_location_name(self, obj):
-        return obj.location.name if obj.location else None
 
 
 class DailyOperationLogSerializer(serializers.ModelSerializer):
