@@ -93,6 +93,40 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         )
         return Response(list(employees))
 
+    # ── Admin: Advance History ────────────────────────────────────────────────
+
+    @action(detail=False, methods=['get'], url_path='advance-history',
+            permission_classes=[permissions.IsAuthenticated])
+    def advance_history(self, request):
+        """
+        Admin: list all advances with employee details.
+        GET /api/employees/advance-history/
+        Optional filter: ?employee_id=<uuid>
+        """
+        if getattr(request.user, 'role', '') != 'admin':
+            return Response({'detail': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+        advances = Advance.objects.select_related('employee').order_by('-date', '-created_at')
+
+        employee_id = request.query_params.get('employee_id')
+        if employee_id:
+            advances = advances.filter(employee_id=employee_id)
+
+        results = []
+        for a in advances:
+            results.append({
+                'id': str(a.id),
+                'employee_id': str(a.employee.id),
+                'employee_name': f'{a.employee.first_name} {a.employee.last_name}',
+                'employee_code': a.employee.employee_code,
+                'amount': float(a.amount),
+                'reason': a.reason or '',
+                'date': str(a.date),
+                'created_at': a.created_at.isoformat(),
+            })
+
+        return Response(results)
+
     # ── Admin: Apply Advance ──────────────────────────────────────────────────
 
     @action(detail=True, methods=['post'], url_path='advance',
