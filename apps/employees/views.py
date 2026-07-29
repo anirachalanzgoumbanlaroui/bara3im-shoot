@@ -12,7 +12,7 @@ from apps.attendance.models import AttendanceLog, AttendanceRecord
 from apps.attendance.services.fingerprint.service import fingerprint_service
 from apps.attendance.services.face.service import face_recognition_service
 
-from .models import Employee, Advance, Deduction
+from .models import Employee, Advance, Deduction, Bonus
 from .serializers import EmployeeSerializer, EmployeeListSerializer
 
 
@@ -341,7 +341,53 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# ── Admin: Apply Late Penalty to an Attendance Record ─────────────────────────
+    # ── Full employee detail with all history ──────────────────────────────────
+
+    @action(detail=True, methods=['get'], url_path='full-detail')
+    def full_detail(self, request, pk=None):
+        """Return employee detail plus all related history records."""
+        employee = self.get_object()
+        self.check_object_permissions(request, employee)
+
+        attendance_records = AttendanceRecord.objects.filter(
+            employee=employee
+        ).select_related('recorded_by').order_by('-date', '-check_in_time')[:20]
+
+        advances = Advance.objects.filter(employee=employee).order_by('-date', '-created_at')[:20]
+        deductions = Deduction.objects.filter(employee=employee).order_by('-date', '-created_at')[:20]
+        bonuses = Bonus.objects.filter(employee=employee).order_by('-date', '-created_at')[:20]
+        activity_logs = AttendanceLog.objects.filter(employee=employee).order_by('-timestamp')[:20]
+
+        from apps.attendance.serializers import AttendanceRecordSerializer, AttendanceLogSerializer
+
+        return Response({
+            'employee': self.get_serializer(employee).data,
+            'attendance_records': AttendanceRecordSerializer(attendance_records, many=True).data,
+            'advances': [{
+                'id': str(a.id),
+                'amount': float(a.amount),
+                'reason': a.reason or '',
+                'date': str(a.date),
+                'created_at': a.created_at.isoformat(),
+            } for a in advances],
+            'deductions': [{
+                'id': str(d.id),
+                'amount': float(d.amount),
+                'reason': d.reason or '',
+                'date': str(d.date),
+                'created_at': d.created_at.isoformat(),
+            } for d in deductions],
+            'bonuses': [{
+                'id': str(b.id),
+                'amount': float(b.amount),
+                'reason': b.reason or '',
+                'date': str(b.date),
+                'created_at': b.created_at.isoformat(),
+            } for b in bonuses],
+            'activity_logs': AttendanceLogSerializer(activity_logs, many=True).data,
+        })
+
+    # ── Admin: Apply Late Penalty to an Attendance Record ─────────────────────────
 
 class AttendanceLatePenaltyView(APIView):
     """
