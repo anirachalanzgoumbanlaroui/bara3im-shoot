@@ -73,7 +73,7 @@ class WorkDayViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def logs(self, request, pk=None):
         work_day = self.get_object()
-        serializer = DailyOperationLogSerializer(work_day.logs.all(), many=True)
+        serializer = DailyOperationLogSerializer(work_day.audit_logs.all(), many=True)
         return Response(serializer.data)
 
     @action(detail=True, methods=['get'])
