@@ -54,6 +54,35 @@ class WorkDayViewSet(viewsets.ModelViewSet):
         summary_data = DailyOperationsService.generate_daily_summary(work_day)
         return Response(summary_data)
 
+    @action(detail=True, methods=['get'])
+    def stats(self, request, pk=None):
+        return self.summary(request, pk)
+
+    @action(detail=True, methods=['get'])
+    def teams(self, request, pk=None):
+        work_day = self.get_object()
+        serializer = DailyTeamSerializer(work_day.teams.all(), many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def sellers(self, request, pk=None):
+        work_day = self.get_object()
+        serializer = SellerDailyOperationSerializer(work_day.seller_operations.all(), many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def logs(self, request, pk=None):
+        work_day = self.get_object()
+        serializer = DailyOperationLogSerializer(work_day.logs.all(), many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def performances(self, request, pk=None):
+        work_day = self.get_object()
+        serializer = DailyEmployeePerformanceSerializer(work_day.performances.all(), many=True)
+        return Response(serializer.data)
+
+
     @action(detail=True, methods=['post'])
     def recalculate(self, request, pk=None):
         work_day = self.get_object()

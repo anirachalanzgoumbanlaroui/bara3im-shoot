@@ -194,14 +194,28 @@ class WorkDaySerializer(serializers.ModelSerializer):
 
 class WorkDayListSerializer(serializers.ModelSerializer):
     location = LocationSerializer(read_only=True)
+    teams_count = serializers.SerializerMethodField()
+    total_photos = serializers.SerializerMethodField()
+    seller_earnings = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkDay
         fields = [
             'id', 'location', 'date', 'status',
             'photographer_unit_price', 'clown_unit_price',
-            'notes', 'created_at', 'updated_at'
+            'notes', 'teams_count', 'total_photos', 'seller_earnings',
+            'created_at', 'updated_at'
         ]
+
+    def get_teams_count(self, obj):
+        return obj.teams.count()
+
+    def get_total_photos(self, obj):
+        return sum(t.team_photo_count for t in obj.teams.all())
+
+    def get_seller_earnings(self, obj):
+        return str(sum(op.amount for op in obj.seller_operations.all()))
+
 
 
 class DailyOperationLogSerializer(serializers.ModelSerializer):
