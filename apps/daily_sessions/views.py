@@ -105,6 +105,16 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
                 raise ValidationError("work_day does not belong to the specified location.")
         return qs
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        team = DailyTeam.objects.select_related(
+            'photographer', 'clown', 'work_day', 'work_day__location'
+        ).prefetch_related('performances').get(pk=serializer.instance.pk)
+        headers = self.get_success_headers(serializer.data)
+        return Response(self.get_serializer(team).data, status=status.HTTP_201_CREATED, headers=headers)
+
     def perform_create(self, serializer):
         team = serializer.save()
         work_day = team.work_day
