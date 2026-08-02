@@ -33,8 +33,10 @@ class WorkDay(models.Model):
     """
 
     class Status(models.TextChoices):
-        OPEN = 'open', 'Open'
-        CLOSED = 'closed', 'Closed'
+        DRAFT = 'draft', 'Draft'
+        IN_PROGRESS = 'in_progress', 'In Progress'
+        COMPLETED = 'completed', 'Completed'
+        LOCKED = 'locked', 'Locked'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     location = models.ForeignKey(
@@ -42,14 +44,14 @@ class WorkDay(models.Model):
     )
     date = models.DateField()
     status = models.CharField(
-        max_length=10, choices=Status.choices, default=Status.OPEN
+        max_length=15, choices=Status.choices, default=Status.DRAFT
     )
     photographer_unit_price = models.DecimalField(
-        max_digits=10, decimal_places=2,
+        max_digits=10, decimal_places=2, default=0,
         help_text="Price per photo for photographers."
     )
     clown_unit_price = models.DecimalField(
-        max_digits=10, decimal_places=2,
+        max_digits=10, decimal_places=2, default=0,
         help_text="Price per photo for clowns."
     )
     notes = models.TextField(blank=True, null=True)
@@ -76,7 +78,7 @@ class WorkDay(models.Model):
         return f"{self.location.name} — {self.date}"
 
     def clean(self):
-        if self.status == self.Status.CLOSED and not self.closed_at:
+        if self.status in (self.Status.COMPLETED, self.Status.LOCKED) and not self.closed_at:
             from django.utils import timezone
             self.closed_at = timezone.now()
 

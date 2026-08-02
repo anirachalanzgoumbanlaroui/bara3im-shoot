@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.db import transaction
 
 from .models import Location, WorkDay, DailyTeam, DailyEmployeePerformance, DailyOperationLog, SellerDailyOperation
 from .serializers import (
@@ -47,6 +48,145 @@ class WorkDayViewSet(viewsets.ModelViewSet):
         if status_filter:
             qs = qs.filter(status=status_filter)
         return qs
+
+    @action(detail=False, methods=['get'], url_path='resolve')
+    def resolve(self, request):
+        location_id = request.query_params.get('location')
+        date = request.query_params.get('date')
+        if not location_id or not date:
+            raise ValidationError("Both 'location' and 'date' parameters are required.")
+
+        try:
+            work_day = WorkDay.objects.prefetch_related(
+                'teams', 'seller_operations', 'teams__performances',
+                'teams__photographer', 'teams__clown', 'seller_operations__seller'
+            ).get(location_id=location_id, date=date)
+            serializer = WorkDaySerializer(work_day, context={'request': request})
+            data = serializer.data
+            data['is_virtual'] = False
+            return Response(data)
+        except WorkDay.DoesNotExist:
+            location = get_object_or_404(Location, id=location_id)
+            virtual = {
+                'id': None,
+                'location': LocationSerializer(location).data,
+                'date': date,
+                'status': 'empty',
+                'photographer_unit_price': '0.00',
+                'clown_unit_price': '0.00',
+                'notes': None,
+                'teams': [],
+                'seller_operations': [],
+                'is_virtual': True,
+                'created_by': None,
+                'created_by_name': None,
+                'created_at': None,
+                'updated_at': None,
+                'closed_at': None,
+            }
+            return Response(virtual)
+
+    @action(detail=False, methods=['get'], url_path='calendar')
+    def calendar(self, request):
+        location_id = request.query_params.get('location')
+        year = request.query_params.get('year')
+        month = request.query_params.get('month')
+        if not location_id or not year or not month:
+            raise ValidationError("'location', 'year', and 'month' parameters are required.")
+
+        work_days = WorkDay.objects.filter(
+            location_id=location_id,
+            date__year=int(year),
+            date__month=int(month)
+        ).values('date', 'status')
+
+        days_map = {str(wd['date']): wd['status'] for wd in work_days}
+        return Response({'days': days_map})
+
+    @action(detail=False, methods=['post'], url_path='bulk-save')
+    @transaction.atomic
+    def bulk_save(self, request):
+        data = request.data
+        location_id = data.get('location_id')
+        date = data.get('date')
+        if not location_id or not date:
+            raise ValidationError({"detail": "location_id and date are required."})
+
+        location = get_object_or_404(Location, id=location_id)
+
+        work_day, created = WorkDay.objects.get_or_create(
+            location=location,
+            date=date,
+            defaults={
+                'photographer_unit_price': data.get('photographer_unit_price', 0),
+                'clown_unit_price': data.get('clown_unit_price', 0),
+                'notes': data.get('notes', ''),
+                'status': data.get('status', WorkDay.Status.DRAFT),
+                'created_by': request.user,
+            }
+        )
+        if not created:
+            if 'photographer_unit_price' in data:
+                work_day.photographer_unit_price = data['photographer_unit_price']
+            if 'clown_unit_price' in data:
+                work_day.clown_unit_price = data['clown_unit_price']
+            if 'notes' in data:
+                work_day.notes = data['notes']
+            if 'status' in data:
+                work_day.status = data['status']
+            work_day.save()
+
+        # Update existing teams photo count
+        teams_data = data.get('teams', [])
+        for t_data in teams_data:
+            team_id = t_data.get('id')
+            photo_count = int(t_data.get('team_photo_count', 0))
+            if team_id:
+                team = DailyTeam.objects.filter(id=team_id, work_day=work_day).first()
+                if team:
+                    team.team_photo_count = photo_count
+                    if 'team_name' in t_data:
+                        team.team_name = t_data['team_name']
+                    team.save(update_fields=['team_photo_count', 'updated_at'] + (['team_name'] if 'team_name' in t_data else []))
+                    # Update auto performances
+                    for perf in team.performances.all():
+                        if perf.adjustment_type == DailyEmployeePerformance.AdjustmentType.AUTOMATIC:
+                            perf.photo_count = photo_count
+                            perf.save(update_fields=['photo_count', 'updated_at'])
+
+        # Update seller operations
+        sellers_data = data.get('seller_operations', [])
+        saved_seller_ids = []
+        for s_data in sellers_data:
+            seller_id = s_data.get('seller')
+            amount = s_data.get('amount', 0)
+            notes = s_data.get('notes', '')
+            if seller_id and amount is not None:
+                seller = get_object_or_404(Employee, id=seller_id, role='seller')
+                op, _ = SellerDailyOperation.objects.update_or_create(
+                    work_day=work_day,
+                    seller=seller,
+                    defaults={'amount': amount, 'notes': notes}
+                )
+                saved_seller_ids.append(str(seller.id))
+
+        if 'seller_operations' in data:
+            SellerDailyOperation.objects.filter(
+                work_day=work_day
+            ).exclude(seller_id__in=saved_seller_ids).delete()
+
+        DailyOperationsService.log_action(
+            work_day,
+            "Work Day Bulk Saved",
+            request.user,
+            {"created": created, "location": location.name, "date": str(date)}
+        )
+
+        serializer = WorkDaySerializer(work_day, context={'request': request})
+        res = serializer.data
+        res['is_virtual'] = False
+        summary = DailyOperationsService.generate_daily_summary(work_day)
+        return Response({'work_day': res, 'summary': summary})
 
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
