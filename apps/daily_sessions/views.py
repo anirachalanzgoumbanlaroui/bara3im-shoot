@@ -182,8 +182,14 @@ class WorkDayViewSet(viewsets.ModelViewSet):
             {"created": created, "location": location.name, "date": str(date)}
         )
 
+        work_day = WorkDay.objects.prefetch_related(
+            'teams', 'teams__performances', 'teams__photographer', 'teams__clown',
+            'seller_operations', 'seller_operations__seller', 'performances',
+            'performances__employee',
+        ).get(pk=work_day.pk)
+
         serializer = WorkDaySerializer(work_day, context={'request': request})
-        res = serializer.data
+        res = dict(serializer.data)
         res['is_virtual'] = False
         summary = DailyOperationsService.generate_daily_summary(work_day)
         return Response({'work_day': res, 'summary': summary})
