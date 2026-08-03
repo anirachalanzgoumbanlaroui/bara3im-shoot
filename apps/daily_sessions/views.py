@@ -16,6 +16,7 @@ from .serializers import (
 )
 from .services import DailyOperationsService
 from apps.employees.models import Employee
+from apps.statistics.services import StatisticsService
 
 
 class LocationViewSet(viewsets.ReadOnlyModelViewSet):
@@ -181,6 +182,7 @@ class WorkDayViewSet(viewsets.ModelViewSet):
             request.user,
             {"created": created, "location": location.name, "date": str(date)}
         )
+        StatisticsService.clear_cache()
 
         work_day = WorkDay.objects.prefetch_related(
             'teams', 'teams__performances', 'teams__photographer', 'teams__clown',

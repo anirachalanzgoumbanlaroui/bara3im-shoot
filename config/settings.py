@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'apps.attendance',
     'apps.notifications',
     'apps.employee_portal',
+    'apps.statistics',
 ]
 
 MIDDLEWARE = [
