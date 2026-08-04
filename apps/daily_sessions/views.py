@@ -296,7 +296,7 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
         team = serializer.save()
         work_day = team.work_day
 
-        DailyEmployeePerformance.objects.get_or_create(
+        DailyEmployeePerformance.objects.update_or_create(
             work_day=work_day,
             employee=team.photographer,
             defaults={
@@ -305,7 +305,7 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
                 'adjustment_type': DailyEmployeePerformance.AdjustmentType.AUTOMATIC,
             }
         )
-        DailyEmployeePerformance.objects.get_or_create(
+        DailyEmployeePerformance.objects.update_or_create(
             work_day=work_day,
             employee=team.clown,
             defaults={
@@ -326,6 +326,13 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         team = serializer.save()
+        # Sync automatic performances when team_photo_count is updated
+        if 'team_photo_count' in serializer.validated_data:
+            new_count = team.team_photo_count
+            for perf in team.performances.all():
+                if perf.adjustment_type == DailyEmployeePerformance.AdjustmentType.AUTOMATIC:
+                    perf.photo_count = new_count
+                    perf.save(update_fields=['photo_count', 'updated_at'])
         DailyOperationsService.log_action(
             team.work_day, "Team Edited", self.request.user,
             {"team_id": str(team.id), "location": team.work_day.location.name}
