@@ -54,7 +54,6 @@ class StatisticsService:
             except Exception:
                 return today - timedelta(days=30), today
         else:
-            # Default to last 30 days
             return today - timedelta(days=30), today
 
     @staticmethod
@@ -65,7 +64,10 @@ class StatisticsService:
         try:
             cache.delete_pattern("stats_*")
         except Exception:
-            cache.clear()
+            try:
+                cache.clear()
+            except Exception:
+                pass
         logger.info("Statistics cache invalidated.")
 
     # --------------------------------------------------------------------------
@@ -94,10 +96,6 @@ class StatisticsService:
         total_employees = Employee.objects.filter(status='active').count()
         current_active_employees = total_employees
 
-        # Total pictures
-        total_pictures = perfs_qs.aggregate(total=Coalesce(Sum('photo_count'), 0))['total'] // 2
-        # (Each photo count in perf is per member of pair, so photo_count per team = perf.photo_count)
-        # We can also compute from DailyTeam
         teams_qs = DailyTeam.objects.filter(work_day__date__range=(s_date, e_date))
         if location_id:
             teams_qs = teams_qs.filter(work_day__location_id=location_id)
@@ -106,14 +104,13 @@ class StatisticsService:
         avg_pictures_per_day = round(total_pictures / max(1, total_work_days), 1)
 
         # Revenue computations
-        # Photo revenue = Sum of team_photo_count * (photographer_unit_price + clown_unit_price) per workday
         photo_rev = 0
         for wd in workdays_qs.prefetch_related('teams'):
             wd_photos = sum(t.team_photo_count for t in wd.teams.all())
             unit_total = float(wd.photographer_unit_price + wd.clown_unit_price)
             photo_rev += wd_photos * unit_total
 
-        seller_rev = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
+        seller_rev = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
         total_revenue = photo_rev + seller_rev
         avg_revenue = round(total_revenue / max(1, total_work_days), 2)
         avg_seller_revenue = round(seller_rev / max(1, sellers_qs.values('seller').distinct().count() or 1), 2)
@@ -123,12 +120,11 @@ class StatisticsService:
         present_count = attendance_qs.filter(status__in=['present', 'late']).count()
         attendance_rate = round((present_count / max(1, total_attendance_records)) * 100, 1) if total_attendance_records > 0 else 94.5
 
-        # Average Team Performance (pictures per team)
+        # Average Team Performance
         total_teams = teams_qs.count()
         avg_team_performance = round(total_pictures / max(1, total_teams), 1)
 
-        # Location Distribution (Ardis vs Sabllet)
-        locations_dist = []
+        # Location Distribution
         all_locations = Location.objects.all()
         loc_total_pics = 0
         loc_data = []
@@ -154,23 +150,27 @@ class StatisticsService:
                 {'id': '2', 'name': 'Sabllet', 'color': '#3B82F6', 'pictures': 0, 'percentage': 50.0},
             ]
 
-        # Trend Data for Overview Line/Area Chart (Daily breakdown)
+        # Optimized Trend Data with grouped single-query annotations
+        daily_pics_map = {
+            item['work_day__date']: item['total']
+            for item in teams_qs.values('work_day__date').annotate(total=Coalesce(Sum('team_photo_count'), 0))
+        }
+        daily_seller_map = {
+            item['work_day__date']: float(item['total'])
+            for item in sellers_qs.values('work_day__date').annotate(total=Coalesce(Sum('amount'), 0))
+        }
+
         daily_trends = []
         curr_d = s_date
         while curr_d <= e_date:
-            d_teams = teams_qs.filter(work_day__date=curr_d)
-            d_sellers = sellers_qs.filter(work_day__date=curr_d)
-            d_pics = d_teams.aggregate(total=Coalesce(Sum('team_photo_count'), 0))['total']
-            d_s_rev = float(d_sellers.aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
-            
             daily_trends.append({
                 'date': curr_d.strftime('%Y-%m-%d'),
                 'day_name': curr_d.strftime('%a'),
-                'pictures': d_pics,
-                'revenue': d_s_rev,
+                'pictures': daily_pics_map.get(curr_d, 0),
+                'revenue': daily_seller_map.get(curr_d, 0.0),
             })
             curr_d += timedelta(days=1)
-            if len(daily_trends) > 60: # Cap trend points for rendering speed
+            if len(daily_trends) > 60:
                 break
 
         res = {
@@ -187,7 +187,10 @@ class StatisticsService:
             'daily_trends': daily_trends,
         }
 
-        cache.set(cache_key, res, CACHE_TIMEOUT)
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
         return res
 
     # --------------------------------------------------------------------------
@@ -201,34 +204,45 @@ class StatisticsService:
             return cached
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
-
         employees = Employee.objects.filter(role=role, status='active')
 
-        # Filter performances
         perfs = DailyEmployeePerformance.objects.filter(
             employee__role=role,
             work_day__date__range=(s_date, e_date)
-        ).select_related('employee', 'work_day')
-
+        )
         if location_id:
             perfs = perfs.filter(work_day__location_id=location_id)
 
-        # Leaderboard calculation
+        perf_map = {}
+        for item in perfs.values('employee_id').annotate(
+            tot_pics=Coalesce(Sum('photo_count'), 0),
+            cnt=Count('work_day', distinct=True),
+            mx=Coalesce(Max('photo_count'), 0)
+        ):
+            perf_map[item['employee_id']] = item
+
+        att_map = {}
+        for item in AttendanceRecord.objects.filter(
+            employee__role=role, date__range=(s_date, e_date)
+        ).values('employee_id').annotate(
+            tot=Count('id'),
+            pres=Count('id', filter=Q(status__in=['present', 'late']))
+        ):
+            att_map[item['employee_id']] = item
+
         leaderboard_data = []
         for emp in employees:
-            emp_perfs = perfs.filter(employee=emp)
-            tot_pics = emp_perfs.aggregate(total=Coalesce(Sum('photo_count'), 0))['total']
-            work_days_cnt = emp_perfs.count()
+            p_data = perf_map.get(emp.id) or perf_map.get(str(emp.id)) or {}
+            tot_pics = p_data.get('tot_pics', 0)
+            work_days_cnt = p_data.get('cnt', 0)
             avg_pics = round(tot_pics / max(1, work_days_cnt), 1)
-            max_daily = emp_perfs.aggregate(mx=Coalesce(Max('photo_count'), 0))['mx']
+            max_daily = p_data.get('mx', 0)
 
-            # Attendance for this employee in date range
-            att_records = AttendanceRecord.objects.filter(employee=emp, date__range=(s_date, e_date))
-            att_total = att_records.count()
-            att_present = att_records.filter(status__in=['present', 'late']).count()
+            a_data = att_map.get(emp.id) or att_map.get(str(emp.id)) or {}
+            att_total = a_data.get('tot', 0)
+            att_present = a_data.get('pres', 0)
             att_rate = round((att_present / max(1, att_total)) * 100, 1) if att_total > 0 else 95.0
 
-            # Score computation out of 100
             prod_score = min(99, max(60, int(avg_pics * 0.4 + att_rate * 0.5 + min(20, max_daily * 0.1))))
 
             leaderboard_data.append({
@@ -246,35 +260,30 @@ class StatisticsService:
                 'streak': max(1, work_days_cnt // 2),
             })
 
-        # Sort leaderboard descending by total_pictures & avg_pictures
         leaderboard_data.sort(key=lambda x: (x['total_pictures'], x['avg_pictures']), reverse=True)
-
         for idx, item in enumerate(leaderboard_data):
             item['rank'] = idx + 1
 
-        # Superlatives / Highlights
         best_ever = leaderboard_data[0] if leaderboard_data else None
-        
-        # Best this month / week filter helper
-        best_this_month = leaderboard_data[0] if leaderboard_data else None
-        best_this_week = leaderboard_data[0] if leaderboard_data else None
-
         most_consistent = max(leaderboard_data, key=lambda x: x['attendance_rate']) if leaderboard_data else None
         most_improved = sorted(leaderboard_data, key=lambda x: x['productivity_score'], reverse=True)[0] if leaderboard_data else None
 
-        # Overall role averages & records
         total_role_pics = sum(x['total_pictures'] for x in leaderboard_data)
         avg_role_pics = round(total_role_pics / max(1, len(leaderboard_data)), 1)
         highest_daily_record = max([x['highest_daily'] for x in leaderboard_data], default=0)
 
-        # Trend Data (Line chart points)
+        # Single query daily trend
+        daily_role_pics = {
+            item['work_day__date']: item['total']
+            for item in perfs.values('work_day__date').annotate(total=Coalesce(Sum('photo_count'), 0))
+        }
+
         trend_data = []
         curr_d = s_date
         while curr_d <= e_date:
-            day_pics = perfs.filter(work_day__date=curr_d).aggregate(total=Coalesce(Sum('photo_count'), 0))['total']
             trend_data.append({
                 'date': curr_d.strftime('%Y-%m-%d'),
-                'pictures': day_pics
+                'pictures': daily_role_pics.get(curr_d, 0)
             })
             curr_d += timedelta(days=1)
             if len(trend_data) > 60:
@@ -283,8 +292,8 @@ class StatisticsService:
         res = {
             'role': role,
             'best_ever': best_ever,
-            'best_this_month': best_this_month,
-            'best_this_week': best_this_week,
+            'best_this_month': best_ever,
+            'best_this_week': best_ever,
             'most_consistent': most_consistent,
             'most_improved': most_improved,
             'highest_daily_record': highest_daily_record,
@@ -294,7 +303,10 @@ class StatisticsService:
             'trend_data': trend_data,
         }
 
-        cache.set(cache_key, res, CACHE_TIMEOUT)
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
         return res
 
     # --------------------------------------------------------------------------
@@ -308,27 +320,42 @@ class StatisticsService:
             return cached
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
-
         sellers = Employee.objects.filter(role='seller', status='active')
+
         seller_ops = SellerDailyOperation.objects.filter(
             work_day__date__range=(s_date, e_date)
-        ).select_related('seller', 'work_day')
-
+        )
         if location_id:
             seller_ops = seller_ops.filter(work_day__location_id=location_id)
 
+        ops_map = {}
+        for item in seller_ops.values('seller_id').annotate(
+            tot_rev=Coalesce(Sum('amount'), 0),
+            cnt=Count('work_day', distinct=True),
+            mx=Coalesce(Max('amount'), 0)
+        ):
+            ops_map[item['seller_id']] = item
+
+        att_map = {}
+        for item in AttendanceRecord.objects.filter(
+            employee__role='seller', date__range=(s_date, e_date)
+        ).values('employee_id').annotate(
+            tot=Count('id'),
+            pres=Count('id', filter=Q(status__in=['present', 'late']))
+        ):
+            att_map[item['employee_id']] = item
+
         leaderboard = []
         for seller in sellers:
-            ops = seller_ops.filter(seller=seller)
-            tot_rev = float(ops.aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
-            cnt = ops.count()
+            o_data = ops_map.get(seller.id) or ops_map.get(str(seller.id)) or {}
+            tot_rev = float(o_data.get('tot_rev', 0))
+            cnt = o_data.get('cnt', 0)
             avg_rev = round(tot_rev / max(1, cnt), 2)
-            max_daily = float(ops.aggregate(mx=Coalesce(Max('amount'), 0.0))['mx'])
+            max_daily = float(o_data.get('mx', 0))
 
-            # Attendance
-            att_records = AttendanceRecord.objects.filter(employee=seller, date__range=(s_date, e_date))
-            att_tot = att_records.count()
-            att_pres = att_records.filter(status__in=['present', 'late']).count()
+            a_data = att_map.get(seller.id) or att_map.get(str(seller.id)) or {}
+            att_tot = a_data.get('tot', 0)
+            att_pres = a_data.get('pres', 0)
             att_rate = round((att_pres / max(1, att_tot)) * 100, 1) if att_tot > 0 else 96.0
 
             consistency_score = min(99, max(70, int(att_rate * 0.6 + min(40, cnt * 2))))
@@ -354,12 +381,17 @@ class StatisticsService:
         tot_seller_revenue = sum(x['total_revenue'] for x in leaderboard)
         avg_seller_rev = round(tot_seller_revenue / max(1, len(leaderboard)), 2)
 
-        # Revenue Trend
+        # Single query daily seller revenue
+        daily_seller_rev = {
+            item['work_day__date']: float(item['total'])
+            for item in seller_ops.values('work_day__date').annotate(total=Coalesce(Sum('amount'), 0))
+        }
+
         revenue_trend = []
         revenue_heatmap = []
         curr_d = s_date
         while curr_d <= e_date:
-            day_rev = float(seller_ops.filter(work_day__date=curr_d).aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
+            day_rev = daily_seller_rev.get(curr_d, 0.0)
             revenue_trend.append({
                 'date': curr_d.strftime('%Y-%m-%d'),
                 'revenue': day_rev
@@ -385,11 +417,14 @@ class StatisticsService:
             'revenue_heatmap': revenue_heatmap,
         }
 
-        cache.set(cache_key, res, CACHE_TIMEOUT)
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
         return res
 
     # --------------------------------------------------------------------------
-    # COUPLES STATISTICS (Photographer + Clown)
+    # COUPLES STATISTICS
     # --------------------------------------------------------------------------
     @classmethod
     def get_couple_stats(cls, time_filter='this_month', location_id=None, start_date=None, end_date=None):
@@ -407,7 +442,6 @@ class StatisticsService:
         if location_id:
             teams_qs = teams_qs.filter(work_day__location_id=location_id)
 
-        # Aggregate by (photographer_id, clown_id)
         couples_map = {}
         for t in teams_qs:
             pair_key = (str(t.photographer.id), str(t.clown.id))
@@ -472,7 +506,10 @@ class StatisticsService:
             'all_couples': couples_list,
         }
 
-        cache.set(cache_key, res, CACHE_TIMEOUT)
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
         return res
 
     # --------------------------------------------------------------------------
@@ -486,10 +523,7 @@ class StatisticsService:
             return cached
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
-
-        records = AttendanceRecord.objects.filter(
-            date__range=(s_date, e_date)
-        ).select_related('employee')
+        records = AttendanceRecord.objects.filter(date__range=(s_date, e_date))
 
         tot_records = records.count()
         present_cnt = records.filter(status='present').count()
@@ -498,17 +532,25 @@ class StatisticsService:
 
         att_rate = round(((present_cnt + late_cnt) / max(1, tot_records)) * 100, 1) if tot_records > 0 else 95.0
 
-        # Employee Perfect Attendance
         employees = Employee.objects.filter(status='active')
+        emp_att_map = {}
+        for item in records.values('employee_id').annotate(
+            tot=Count('id'),
+            pres=Count('id', filter=Q(status='present')),
+            late=Count('id', filter=Q(status='late')),
+            absent=Count('id', filter=Q(status='absent'))
+        ):
+            emp_att_map[item['employee_id']] = item
+
         perfect_attendance_list = []
         ranking_list = []
 
         for emp in employees:
-            emp_recs = records.filter(employee=emp)
-            emp_tot = emp_recs.count()
-            emp_pres = emp_recs.filter(status='present').count()
-            emp_late = emp_recs.filter(status='late').count()
-            emp_abs = emp_recs.filter(status='absent').count()
+            a_data = emp_att_map.get(emp.id) or emp_att_map.get(str(emp.id)) or {}
+            emp_tot = a_data.get('tot', 0)
+            emp_pres = a_data.get('pres', 0)
+            emp_late = a_data.get('late', 0)
+            emp_abs = a_data.get('absent', 0)
             emp_rate = round(((emp_pres + emp_late) / max(1, emp_tot)) * 100, 1) if emp_tot > 0 else 100.0
 
             if emp_rate >= 99.0 and emp_abs == 0:
@@ -527,13 +569,20 @@ class StatisticsService:
 
         ranking_list.sort(key=lambda x: (x['attendance_rate'], x['present_days']), reverse=True)
 
-        # Calendar Heatmap Data
+        daily_att_map = {
+            item['date']: item
+            for item in records.values('date').annotate(
+                tot=Count('id'),
+                pres=Count('id', filter=Q(status__in=['present', 'late']))
+            )
+        }
+
         calendar_heatmap = []
         curr_d = s_date
         while curr_d <= e_date:
-            d_recs = records.filter(date=curr_d)
-            d_tot = d_recs.count()
-            d_pres = d_recs.filter(status__in=['present', 'late']).count()
+            d_data = daily_att_map.get(curr_d, {})
+            d_tot = d_data.get('tot', 0)
+            d_pres = d_data.get('pres', 0)
             d_rate = round((d_pres / max(1, d_tot)) * 100, 1) if d_tot > 0 else 100.0
 
             calendar_heatmap.append({
@@ -558,7 +607,10 @@ class StatisticsService:
             'attendance_calendar_heatmap': calendar_heatmap,
         }
 
-        cache.set(cache_key, res, CACHE_TIMEOUT)
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
         return res
 
     # --------------------------------------------------------------------------
@@ -582,24 +634,22 @@ class StatisticsService:
             workdays_qs = workdays_qs.filter(location_id=location_id)
             sellers_qs = sellers_qs.filter(work_day__location_id=location_id)
 
-        # Photo Revenue
         photo_revenue = 0
         for wd in workdays_qs.prefetch_related('teams'):
             wd_photos = sum(t.team_photo_count for t in wd.teams.all())
             unit_total = float(wd.photographer_unit_price + wd.clown_unit_price)
             photo_revenue += wd_photos * unit_total
 
-        seller_revenue = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
+        seller_revenue = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
         total_revenue = photo_revenue + seller_revenue
 
-        total_bonuses = float(bonuses_qs.aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
-        total_deductions = float(deductions_qs.aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
+        total_bonuses = float(bonuses_qs.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
+        total_deductions = float(deductions_qs.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
 
         net_salary = total_revenue + total_bonuses - total_deductions
         emp_count = Employee.objects.filter(status='active').count()
         avg_salary = round(net_salary / max(1, emp_count), 2)
 
-        # Revenue by Location
         revenue_by_location = []
         for loc in Location.objects.all():
             l_workdays = workdays_qs.filter(location=loc)
@@ -608,7 +658,7 @@ class StatisticsService:
             for wd in l_workdays.prefetch_related('teams'):
                 w_pics = sum(t.team_photo_count for t in wd.teams.all())
                 l_photo_rev += w_pics * float(wd.photographer_unit_price + wd.clown_unit_price)
-            l_seller_rev = float(l_sellers.aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
+            l_seller_rev = float(l_sellers.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
             revenue_by_location.append({
                 'location_id': str(loc.id),
                 'location_name': loc.name,
@@ -616,7 +666,11 @@ class StatisticsService:
                 'revenue': l_photo_rev + l_seller_rev
             })
 
-        # Top Revenue Day
+        daily_sellers = {
+            item['work_day__date']: float(item['total'])
+            for item in sellers_qs.values('work_day__date').annotate(total=Coalesce(Sum('amount'), 0))
+        }
+
         top_day_rev = 0
         top_day_str = s_date.strftime('%Y-%m-%d')
         curr_d = s_date
@@ -624,12 +678,11 @@ class StatisticsService:
 
         while curr_d <= e_date:
             d_workdays = workdays_qs.filter(date=curr_d)
-            d_sellers = sellers_qs.filter(work_day__date=curr_d)
             d_photo_rev = 0
             for wd in d_workdays.prefetch_related('teams'):
                 w_pics = sum(t.team_photo_count for t in wd.teams.all())
                 d_photo_rev += w_pics * float(wd.photographer_unit_price + wd.clown_unit_price)
-            d_seller_rev = float(d_sellers.aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
+            d_seller_rev = daily_sellers.get(curr_d, 0.0)
             d_total = d_photo_rev + d_seller_rev
 
             if d_total > top_day_rev:
@@ -658,11 +711,14 @@ class StatisticsService:
             'daily_revenue_breakdown': daily_revenue_breakdown,
         }
 
-        cache.set(cache_key, res, CACHE_TIMEOUT)
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
         return res
 
     # --------------------------------------------------------------------------
-    # LOCATION COMPARISONS (Ardis VS Sabllet)
+    # LOCATION COMPARISONS
     # --------------------------------------------------------------------------
     @classmethod
     def get_comparison_stats(cls, time_filter='this_month', start_date=None, end_date=None):
@@ -672,7 +728,6 @@ class StatisticsService:
             return cached
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
-
         locations = Location.objects.all()
         comparison_list = []
 
@@ -680,7 +735,6 @@ class StatisticsService:
             workdays = WorkDay.objects.filter(location=loc, date__range=(s_date, e_date))
             teams = DailyTeam.objects.filter(work_day__location=loc, work_day__date__range=(s_date, e_date))
             sellers = SellerDailyOperation.objects.filter(work_day__location=loc, work_day__date__range=(s_date, e_date))
-            att = AttendanceRecord.objects.filter(date__range=(s_date, e_date))
 
             pics = teams.aggregate(total=Coalesce(Sum('team_photo_count'), 0))['total']
             
@@ -689,7 +743,7 @@ class StatisticsService:
                 w_pics = sum(t.team_photo_count for t in wd.teams.all())
                 photo_rev += w_pics * float(wd.photographer_unit_price + wd.clown_unit_price)
 
-            seller_rev = float(sellers.aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
+            seller_rev = float(sellers.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
             tot_rev = photo_rev + seller_rev
 
             avg_prod = round(pics / max(1, teams.count()), 1)
@@ -710,7 +764,10 @@ class StatisticsService:
             'time_filter': time_filter,
         }
 
-        cache.set(cache_key, res, CACHE_TIMEOUT)
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
         return res
 
     # --------------------------------------------------------------------------
@@ -740,9 +797,9 @@ class StatisticsService:
                 'icon': '👑',
                 'color': '#FFD700',
                 'description': 'Awarded for taking the highest total number of photos.',
-                'winner_name': top_photo['name'] if top_photo else 'Ahmed',
+                'winner_name': top_photo['name'] if top_photo else 'N/A',
                 'winner_avatar': top_photo['avatar'] if top_photo else None,
-                'winner_score': f"{top_photo['total_pictures'] if top_photo else 1250} Photos",
+                'winner_score': f"{top_photo['total_pictures'] if top_photo else 0} Photos",
             },
             {
                 'id': 'machine',
@@ -750,9 +807,9 @@ class StatisticsService:
                 'icon': '⚡',
                 'color': '#EAB308',
                 'description': 'Highest single day output record holder.',
-                'winner_name': top_photo['name'] if top_photo else 'Karim',
+                'winner_name': top_photo['name'] if top_photo else 'N/A',
                 'winner_avatar': top_photo['avatar'] if top_photo else None,
-                'winner_score': f"{top_photo['highest_daily'] if top_photo else 180} Photos/day",
+                'winner_score': f"{top_photo['highest_daily'] if top_photo else 0} Photos/day",
             },
             {
                 'id': 'silent_killer',
@@ -760,9 +817,9 @@ class StatisticsService:
                 'icon': '🥷',
                 'color': '#A855F7',
                 'description': 'Consistently high output with maximum efficiency.',
-                'winner_name': top_clown['name'] if top_clown else 'Yacine',
+                'winner_name': top_clown['name'] if top_clown else 'N/A',
                 'winner_avatar': top_clown['avatar'] if top_clown else None,
-                'winner_score': f"{top_clown['productivity_score'] if top_clown else 96} Score",
+                'winner_score': f"{top_clown['productivity_score'] if top_clown else 0} Score",
             },
             {
                 'id': 'most_consistent',
@@ -770,9 +827,9 @@ class StatisticsService:
                 'icon': '🎯',
                 'color': '#3B82F6',
                 'description': 'Lowest variance and rock-solid daily reliability.',
-                'winner_name': photo_stats['most_consistent']['name'] if photo_stats.get('most_consistent') else 'Samir',
+                'winner_name': photo_stats['most_consistent']['name'] if photo_stats.get('most_consistent') else 'N/A',
                 'winner_avatar': photo_stats['most_consistent']['avatar'] if photo_stats.get('most_consistent') else None,
-                'winner_score': '99.5% Consistency',
+                'winner_score': f"{photo_stats['most_consistent']['attendance_rate'] if photo_stats.get('most_consistent') else 100}% Consistency",
             },
             {
                 'id': 'most_improved',
@@ -780,9 +837,9 @@ class StatisticsService:
                 'icon': '📈',
                 'color': '#10B981',
                 'description': 'Fastest growing employee compared to previous cycle.',
-                'winner_name': photo_stats['most_improved']['name'] if photo_stats.get('most_improved') else 'Bilal',
+                'winner_name': photo_stats['most_improved']['name'] if photo_stats.get('most_improved') else 'N/A',
                 'winner_avatar': photo_stats['most_improved']['avatar'] if photo_stats.get('most_improved') else None,
-                'winner_score': '+45% Productivity',
+                'winner_score': f"{photo_stats['most_improved']['productivity_score'] if photo_stats.get('most_improved') else 80} Score",
             },
             {
                 'id': 'iron_man',
@@ -790,51 +847,42 @@ class StatisticsService:
                 'icon': '🛡️',
                 'color': '#64748B',
                 'description': 'Zero missed days and maximum attendance durability.',
-                'winner_name': top_seller['name'] if top_seller else 'Mustapha',
+                'winner_name': top_seller['name'] if top_seller else 'N/A',
                 'winner_avatar': top_seller['avatar'] if top_seller else None,
-                'winner_score': '100% Attendance',
+                'winner_score': f"{top_seller['attendance_rate'] if top_seller else 100}% Attendance",
             },
             {
                 'id': 'revenue_king',
                 'title': 'Revenue King',
                 'icon': '💰',
                 'color': '#22C55E',
-                'description': 'Generated the highest sales and revenue for Bara3im Shoot.',
-                'winner_name': top_seller['name'] if top_seller else 'Mustapha',
+                'description': 'Highest total revenue generated by a seller.',
+                'winner_name': top_seller['name'] if top_seller else 'N/A',
                 'winner_avatar': top_seller['avatar'] if top_seller else None,
-                'winner_score': f"{top_seller['total_revenue'] if top_seller else 45000} DA",
+                'winner_score': f"{top_seller['total_revenue'] if top_seller else 0} DA",
             },
             {
-                'id': 'most_valuable_couple',
-                'title': 'Most Valuable Couple',
-                'icon': '👥',
-                'color': '#F43F5E',
-                'description': 'Top performing Photographer + Clown duo.',
-                'winner_name': top_couple['team_name'] if top_couple else 'Ahmed & Karim',
+                'id': 'best_duo',
+                'title': 'Dynamic Duo',
+                'icon': '👑',
+                'color': '#EC4899',
+                'description': 'Highest performing photographer and clown pair.',
+                'winner_name': top_couple['team_name'] if top_couple else 'N/A',
                 'winner_avatar': None,
-                'winner_score': f"{top_couple['total_pictures'] if top_couple else 2100} Photos",
-            },
-            {
-                'id': 'goat',
-                'title': 'GOAT 🐐',
-                'icon': '🐐',
-                'color': '#FFD700',
-                'description': 'Highest overall employee rating in the company.',
-                'winner_name': top_photo['name'] if top_photo else 'Ahmed',
-                'winner_avatar': top_photo['avatar'] if top_photo else None,
-                'winner_score': '98 Rating',
+                'winner_score': f"{top_couple['total_pictures'] if top_couple else 0} Photos",
             },
         ]
 
-        res = {
-            'awards': awards,
-        }
+        res = {'awards': awards}
 
-        cache.set(cache_key, res, CACHE_TIMEOUT)
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
         return res
 
     # --------------------------------------------------------------------------
-    # SMART INSIGHTS
+    # INSIGHTS SECTION
     # --------------------------------------------------------------------------
     @classmethod
     def get_insights(cls, time_filter='this_month', location_id=None, start_date=None, end_date=None):
@@ -843,26 +891,26 @@ class StatisticsService:
         if cached:
             return cached
 
-        overview = cls.get_overview(time_filter, location_id, start_date, end_date)
         photo_stats = cls.get_role_stats('photographer', time_filter, location_id, start_date, end_date)
         seller_stats = cls.get_seller_stats(time_filter, location_id, start_date, end_date)
         couple_stats = cls.get_couple_stats(time_filter, location_id, start_date, end_date)
 
-        insights = []
-        insights.append({
-            'icon': '📈',
-            'type': 'positive',
-            'title': 'Productivity Boost',
-            'message': f"Productivity increased by 18% during this {time_filter.replace('_', ' ')}.",
-        })
+        insights = [
+            {
+                'icon': '📈',
+                'type': 'positive',
+                'title': 'Productivity Boost',
+                'message': f"Productivity steady during this {time_filter.replace('_', ' ')}.",
+            }
+        ]
 
         if photo_stats['leaderboard']:
             top = photo_stats['leaderboard'][0]
             insights.append({
                 'icon': '🔥',
                 'type': 'record',
-                'title': 'New Personal Record',
-                'message': f"{top['name']} reached a high of {top['highest_daily']} pictures in a single day!",
+                'title': 'Top Performer',
+                'message': f"{top['name']} leads with {top['total_pictures']} pictures taken!",
             })
 
         if couple_stats['top_10_couples']:
@@ -871,7 +919,7 @@ class StatisticsService:
                 'icon': '⭐',
                 'type': 'star',
                 'title': 'Dominant Duo',
-                'message': f"Couple {top_c['team_name']} has maintained the #1 rank with {top_c['total_pictures']} total photos.",
+                'message': f"Couple {top_c['team_name']} holds #1 rank with {top_c['total_pictures']} total photos.",
             })
 
         if seller_stats['leaderboard']:
@@ -883,7 +931,11 @@ class StatisticsService:
             })
 
         res = {'insights': insights}
-        cache.set(cache_key, res, CACHE_TIMEOUT)
+
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
         return res
 
     # --------------------------------------------------------------------------
@@ -903,7 +955,7 @@ class StatisticsService:
         att_recs = AttendanceRecord.objects.filter(employee=employee, date__range=(s_date, e_date))
 
         tot_pics = perfs.aggregate(total=Coalesce(Sum('photo_count'), 0))['total']
-        tot_seller_rev = float(seller_ops.aggregate(total=Coalesce(Sum('amount'), 0.0))['total'])
+        tot_seller_rev = float(seller_ops.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
         max_daily = perfs.aggregate(mx=Coalesce(Max('photo_count'), 0))['mx']
 
         att_tot = att_recs.count()
@@ -925,8 +977,7 @@ class StatisticsService:
             'highest_daily': max_daily,
             'attendance_rate': att_rate,
             'career_timeline': [
-                {'year': '2026', 'event': 'Top Photographer of the Month'},
-                {'year': '2025', 'event': 'Joined Bara3im Shoot'},
+                {'year': '2026', 'event': 'Active Employee'},
             ],
             'badges': ['🐐 GOAT', '👑 King of Pictures', '⚡ Machine', '🛡️ Iron Man'],
         }
