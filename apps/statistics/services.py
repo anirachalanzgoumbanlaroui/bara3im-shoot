@@ -1039,5 +1039,5 @@ class StatisticsService:
             'career_timeline': [
                 {'year': '2026', 'event': 'Active Employee'},
             ],
-            'badges': ['🐐 GOAT', '👑 King of Pictures', '⚡ Machine', '🛡️ Iron Man'],
+            'badges': ['👑 NADJIB', '🎯 Targi', '🐐 Messi', '🛡️ AGENT'],
         }
