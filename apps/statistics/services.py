@@ -8,6 +8,7 @@ from django.core.cache import cache
 from apps.daily_sessions.models import WorkDay, DailyTeam, DailyEmployeePerformance, SellerDailyOperation, Location
 from apps.employees.models import Employee, Bonus, Deduction, Advance
 from apps.attendance.models import AttendanceRecord
+from .models import Achievement, EmployeeAchievement
 
 logger = logging.getLogger(__name__)
 
@@ -939,6 +940,119 @@ class StatisticsService:
         return res
 
     # --------------------------------------------------------------------------
+    # NADJIB LEGENDARY WINNER CALCULATION
+    # --------------------------------------------------------------------------
+    @classmethod
+    def get_nadjib_winner(cls, time_filter='this_month', location_id=None, start_date=None, end_date=None):
+        """
+        Calculates the overall top performing employee for the legendary NADJIB badge.
+        Calculations respect location scoping and statistical time ranges.
+        Tie-breaking hierarchy:
+        1. Performance Score (highest)
+        2. Average Daily Pictures (highest)
+        3. Work Days Count (highest)
+        4. Total Pictures (highest)
+        5. Employee UUID (stable alphabetical fallback)
+        """
+        cache_key = f"stats_nadjib_{time_filter}_{location_id}_{start_date}_{end_date}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
+        employees = Employee.objects.filter(status='active', is_active=True)
+
+        if not employees.exists():
+            return None
+
+        candidates = []
+        for emp in employees:
+            perfs_qs = DailyEmployeePerformance.objects.filter(
+                employee=emp,
+                work_day__date__range=(s_date, e_date)
+            )
+            seller_qs = SellerDailyOperation.objects.filter(
+                seller=emp,
+                work_day__date__range=(s_date, e_date)
+            )
+            att_qs = AttendanceRecord.objects.filter(
+                employee=emp,
+                date__range=(s_date, e_date)
+            )
+
+            if location_id:
+                perfs_qs = perfs_qs.filter(work_day__location_id=location_id)
+                seller_qs = seller_qs.filter(work_day__location_id=location_id)
+
+            tot_pics = perfs_qs.aggregate(total=Coalesce(Sum('photo_count'), 0))['total']
+            tot_rev = float(seller_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
+            work_days = perfs_qs.count()
+            avg_pics = round(tot_pics / max(1, work_days), 1)
+            max_daily = perfs_qs.aggregate(mx=Coalesce(Max('photo_count'), 0))['mx']
+
+            att_tot = att_qs.count()
+            att_pres = att_qs.filter(status__in=['present', 'late']).count()
+            att_rate = round((att_pres / max(1, att_tot)) * 100, 1) if att_tot > 0 else 98.0
+
+            raw_score = (avg_pics * 0.4) + (work_days * 4) + (att_rate * 0.2) + min(tot_pics * 0.05, 20) + (tot_rev * 0.001)
+            perf_score = min(99, max(70, int(raw_score))) if (work_days > 0 or tot_rev > 0) else 70
+
+            candidates.append({
+                'employee': emp,
+                'employee_id': str(emp.id),
+                'name': f"{emp.first_name} {emp.last_name}",
+                'employee_code': emp.employee_code,
+                'role': emp.role,
+                'avatar': emp.avatar.url if emp.avatar else None,
+                'score': perf_score,
+                'total_pictures': tot_pics,
+                'avg_daily_pictures': avg_pics,
+                'work_days_count': work_days,
+                'highest_daily': max_daily,
+                'attendance_rate': att_rate,
+                'total_revenue': tot_rev,
+                'badge': '🏆 NADJIB',
+                'badge_name': 'NADJIB',
+                'is_legendary': True,
+            })
+
+        candidates.sort(key=lambda c: (
+            c['score'],
+            c['avg_daily_pictures'],
+            c['work_days_count'],
+            c['total_pictures'],
+            c['employee_id']
+        ), reverse=True)
+
+        winner = candidates[0] if candidates else None
+
+        if winner:
+            try:
+                nadjib_ach, _ = Achievement.objects.get_or_create(
+                    name='NADJIB',
+                    defaults={
+                        'description': 'Awarded to the overall top performing employee.',
+                        'icon': '🏆',
+                        'is_legendary': True,
+                    }
+                )
+                loc_obj = Location.objects.filter(id=location_id).first() if location_id else None
+                EmployeeAchievement.objects.get_or_create(
+                    employee=winner['employee'],
+                    achievement=nadjib_ach,
+                    period=time_filter,
+                    location=loc_obj,
+                )
+            except Exception as e:
+                logger.warning(f"Could not record EmployeeAchievement: {e}")
+
+            winner_data = {k: v for k, v in winner.items() if k != 'employee'}
+            cache.set(cache_key, winner_data, CACHE_TIMEOUT)
+            return winner_data
+
+        return None
+
+    # --------------------------------------------------------------------------
     # EMPLOYEE PROFILE STATISTICS
     # --------------------------------------------------------------------------
     @classmethod
@@ -1020,6 +1134,16 @@ class StatisticsService:
 
         rating = min(99, max(75, int(tot_pics * 0.05 + att_rate * 0.5 + tot_seller_rev * 0.001)))
 
+        # Check if employee has earned NADJIB achievement
+        has_nadjib = EmployeeAchievement.objects.filter(
+            employee=employee,
+            achievement__name='NADJIB'
+        ).exists()
+
+        badges = ['👑 NADJIB', '🎯 Targi', '🐐 Messi', '🛡️ AGENT']
+        if has_nadjib and '🏆 NADJIB' not in badges:
+            badges.insert(0, '🏆 NADJIB')
+
         return {
             'employee_id': str(employee.id),
             'name': f"{employee.first_name} {employee.last_name}",
@@ -1036,8 +1160,9 @@ class StatisticsService:
             'total_revenue': tot_seller_rev,
             'attendance_rate': att_rate,
             'best_partner': best_partner,
+            'has_nadjib_badge': has_nadjib,
             'career_timeline': [
                 {'year': '2026', 'event': 'Active Employee'},
             ],
-            'badges': ['👑 NADJIB', '🎯 Targi', '🐐 Messi', '🛡️ AGENT'],
+            'badges': badges,
         }

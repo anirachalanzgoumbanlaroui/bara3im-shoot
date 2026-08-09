@@ -86,12 +86,35 @@ class StatisticsViewSet(viewsets.ViewSet):
         data = StatisticsService.get_employee_profile_stats(employee_id, tf, s_date, e_date)
         return Response(data)
 
+    @action(detail=False, methods=['get'], url_path='nadjib')
+    def nadjib(self, request):
+        tf, loc, s_date, e_date = self._get_params(request)
+        data = StatisticsService.get_nadjib_winner(tf, loc, s_date, e_date)
+        return Response(data or {})
+
     @action(detail=False, methods=['get'], url_path='fifa-reveal')
     def fifa_reveal(self, request):
-        category = request.query_params.get('category', 'photographer')
+        category = request.query_params.get('category', 'nadjib')
         tf, loc, s_date, e_date = self._get_params(request)
 
-        if category == 'photographer':
+        if category == 'nadjib':
+            winner = StatisticsService.get_nadjib_winner(tf, loc, s_date, e_date)
+            card_data = {
+                'rating': winner['score'] if winner else 99,
+                'badge': '🏆',
+                'title': 'NADJIB LEGENDARY WINNER',
+                'name': winner['name'] if winner else 'Top Performer',
+                'role': (winner['role'] if winner else 'Photographer').upper(),
+                'avatar': winner['avatar'] if winner else None,
+                'avg_pictures': winner['avg_daily_pictures'] if winner else 45.0,
+                'total_pictures': winner['total_pictures'] if winner else 1240,
+                'work_days': winner['work_days_count'] if winner else 28,
+                'attendance_rate': winner['attendance_rate'] if winner else 98.0,
+                'awards_count': 10,
+                'winning_streak': 12,
+                'current_rank': 1,
+            }
+        elif category == 'photographer':
             stats = StatisticsService.get_role_stats('photographer', tf, loc, s_date, e_date)
             best = stats['best_ever']
             card_data = {
