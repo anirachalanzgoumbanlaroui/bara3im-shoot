@@ -56,7 +56,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     pagination_class = EmployeePagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
 
-    filterset_fields = ['role', 'status']
+    filterset_fields = ['role', 'status', 'is_active']
     search_fields = ['first_name', 'last_name', 'employee_code', 'phone_number']
     ordering_fields = ['first_name', 'last_name', 'hiring_date', 'created_at']
     ordering = ['-created_at']
@@ -65,6 +65,32 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         if self.action == 'list' and getattr(self.request.user, 'role', '') == 'admin':
             return EmployeeListSerializer
         return super().get_serializer_class()
+
+    def destroy(self, request, *args, **kwargs):
+        """Soft delete (deactivate) employee instead of database deletion."""
+        employee = self.get_object()
+        employee.is_active = False
+        employee.status = Employee.Status.INACTIVE
+        employee.save()
+        return Response(self.get_serializer(employee).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['patch', 'post'], url_path='deactivate')
+    def deactivate(self, request, pk=None):
+        """Soft delete / deactivate employee."""
+        employee = self.get_object()
+        employee.is_active = False
+        employee.status = Employee.Status.INACTIVE
+        employee.save()
+        return Response(self.get_serializer(employee).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['patch', 'post'], url_path='reactivate')
+    def reactivate(self, request, pk=None):
+        """Reactivate a previously deactivated employee."""
+        employee = self.get_object()
+        employee.is_active = True
+        employee.status = Employee.Status.ACTIVE
+        employee.save()
+        return Response(self.get_serializer(employee).data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'])
     def me(self, request):

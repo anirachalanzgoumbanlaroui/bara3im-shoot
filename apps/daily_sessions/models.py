@@ -94,13 +94,13 @@ class DailyTeam(models.Model):
     )
     photographer = models.ForeignKey(
         'employees.Employee',
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name='teams_as_photographer',
         limit_choices_to={'role': 'photographer'}
     )
     clown = models.ForeignKey(
         'employees.Employee',
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name='teams_as_clown',
         limit_choices_to={'role': 'clown'}
     )
@@ -156,7 +156,7 @@ class DailyEmployeePerformance(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     employee = models.ForeignKey(
-        'employees.Employee', on_delete=models.CASCADE, related_name='performances'
+        'employees.Employee', on_delete=models.PROTECT, related_name='performances'
     )
     work_day = models.ForeignKey(
         WorkDay, on_delete=models.CASCADE, related_name='performances'
@@ -212,7 +212,7 @@ class SellerDailyOperation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     seller = models.ForeignKey(
         'employees.Employee',
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name='seller_daily_operations',
         limit_choices_to={'role': 'seller'}
     )

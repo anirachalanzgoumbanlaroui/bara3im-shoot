@@ -88,7 +88,7 @@ class AttendanceRecord(models.Model):
         ABSENT = 'absent', 'Absent'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='attendance_records')
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name='attendance_records')
     date = models.DateField()
     check_in_time = models.DateTimeField()
     minutes_late = models.PositiveIntegerField(default=0)

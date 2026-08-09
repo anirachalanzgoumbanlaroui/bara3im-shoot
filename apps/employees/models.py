@@ -35,6 +35,7 @@ class Employee(models.Model):
     status = models.CharField(
         max_length=50, choices=Status.choices, default=Status.ACTIVE
     )
+    is_active = models.BooleanField(default=True)
     avatar = models.ImageField(upload_to='employees/avatars/', blank=True, null=True)
     notes = models.TextField(blank=True, null=True)
     fingerprint_registered = models.BooleanField(default=False)
@@ -54,6 +55,16 @@ class Employee(models.Model):
         return f"{self.first_name} {self.last_name} ({self.employee_code})"
 
     def save(self, *args, **kwargs):
+        # Keep status and is_active in sync
+        if self.is_active and self.status == self.Status.INACTIVE:
+            self.status = self.Status.ACTIVE
+        elif not self.is_active and self.status == self.Status.ACTIVE:
+            self.status = self.Status.INACTIVE
+        elif self.status == self.Status.INACTIVE:
+            self.is_active = False
+        elif self.status == self.Status.ACTIVE:
+            self.is_active = True
+
         # Automatically generate employee code if not provided
         if not self.employee_code:
             last_employee = Employee.objects.all().order_by('created_at').last()
@@ -70,7 +81,7 @@ class Employee(models.Model):
 
 class Bonus(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='bonuses')
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name='bonuses')
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     date = models.DateField(auto_now_add=True)
     reason = models.TextField(blank=True, null=True)
@@ -85,7 +96,7 @@ class Bonus(models.Model):
 
 class Advance(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='advances')
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name='advances')
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     date = models.DateField(auto_now_add=True)
     reason = models.TextField(blank=True, null=True)
@@ -100,7 +111,7 @@ class Advance(models.Model):
 
 class Deduction(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='deductions')
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name='deductions')
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     date = models.DateField(auto_now_add=True)
     reason = models.TextField(blank=True, null=True)
