@@ -10,6 +10,10 @@ class EmployeeSerializer(serializers.ModelSerializer):
     """
     username = serializers.CharField(write_only=True, required=False)
     password = serializers.CharField(write_only=True, required=False)
+    is_active = serializers.SerializerMethodField()
+
+    def get_is_active(self, obj):
+        return getattr(obj, 'is_active', obj.status == 'active')
 
     class Meta:
         model = Employee
@@ -99,6 +103,11 @@ class EmployeeListSerializer(serializers.ModelSerializer):
     """
     Simplified serializer for listing employees to optimize performance.
     """
+    is_active = serializers.SerializerMethodField()
+
+    def get_is_active(self, obj):
+        return getattr(obj, 'is_active', obj.status == 'active')
+
     class Meta:
         model = Employee
         fields = [

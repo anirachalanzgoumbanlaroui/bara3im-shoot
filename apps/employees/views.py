@@ -56,10 +56,20 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     pagination_class = EmployeePagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
 
-    filterset_fields = ['role', 'status', 'is_active']
+    filterset_fields = ['role', 'status']
     search_fields = ['first_name', 'last_name', 'employee_code', 'phone_number']
     ordering_fields = ['first_name', 'last_name', 'hiring_date', 'created_at']
     ordering = ['-created_at']
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        is_active_param = self.request.query_params.get('is_active')
+        if is_active_param is not None:
+            if is_active_param.lower() in ('true', '1'):
+                queryset = queryset.filter(status='active')
+            elif is_active_param.lower() in ('false', '0'):
+                queryset = queryset.filter(status='inactive')
+        return queryset
 
     def get_serializer_class(self):
         if self.action == 'list' and getattr(self.request.user, 'role', '') == 'admin':
