@@ -110,7 +110,7 @@ class StatisticsService:
             unit_total = float(wd.photographer_unit_price + wd.clown_unit_price)
             photo_rev += wd_photos * unit_total
 
-        seller_rev = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
+        seller_rev = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
         total_revenue = photo_rev + seller_rev
         avg_revenue = round(total_revenue / max(1, total_work_days), 2)
         avg_seller_revenue = round(seller_rev / max(1, sellers_qs.values('seller').distinct().count() or 1), 2)
@@ -157,7 +157,7 @@ class StatisticsService:
         }
         daily_seller_map = {
             item['work_day__date']: float(item['total'])
-            for item in sellers_qs.values('work_day__date').annotate(total=Coalesce(Sum('amount'), 0))
+            for item in sellers_qs.values('work_day__date').annotate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))
         }
 
         daily_trends = []
@@ -330,9 +330,9 @@ class StatisticsService:
 
         ops_map = {}
         for item in seller_ops.values('seller_id').annotate(
-            tot_rev=Coalesce(Sum('amount'), 0),
+            tot_rev=Coalesce(Sum('amount'), 0, output_field=FloatField()),
             cnt=Count('work_day', distinct=True),
-            mx=Coalesce(Max('amount'), 0)
+            mx=Coalesce(Max('amount'), 0, output_field=FloatField())
         ):
             ops_map[item['seller_id']] = item
 
@@ -384,7 +384,7 @@ class StatisticsService:
         # Single query daily seller revenue
         daily_seller_rev = {
             item['work_day__date']: float(item['total'])
-            for item in seller_ops.values('work_day__date').annotate(total=Coalesce(Sum('amount'), 0))
+            for item in seller_ops.values('work_day__date').annotate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))
         }
 
         revenue_trend = []
@@ -640,11 +640,11 @@ class StatisticsService:
             unit_total = float(wd.photographer_unit_price + wd.clown_unit_price)
             photo_revenue += wd_photos * unit_total
 
-        seller_revenue = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
+        seller_revenue = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
         total_revenue = photo_revenue + seller_revenue
 
-        total_bonuses = float(bonuses_qs.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
-        total_deductions = float(deductions_qs.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
+        total_bonuses = float(bonuses_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
+        total_deductions = float(deductions_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
 
         net_salary = total_revenue + total_bonuses - total_deductions
         emp_count = Employee.objects.filter(status='active').count()
@@ -658,7 +658,7 @@ class StatisticsService:
             for wd in l_workdays.prefetch_related('teams'):
                 w_pics = sum(t.team_photo_count for t in wd.teams.all())
                 l_photo_rev += w_pics * float(wd.photographer_unit_price + wd.clown_unit_price)
-            l_seller_rev = float(l_sellers.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
+            l_seller_rev = float(l_sellers.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
             revenue_by_location.append({
                 'location_id': str(loc.id),
                 'location_name': loc.name,
@@ -668,7 +668,7 @@ class StatisticsService:
 
         daily_sellers = {
             item['work_day__date']: float(item['total'])
-            for item in sellers_qs.values('work_day__date').annotate(total=Coalesce(Sum('amount'), 0))
+            for item in sellers_qs.values('work_day__date').annotate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))
         }
 
         top_day_rev = 0
@@ -743,7 +743,7 @@ class StatisticsService:
                 w_pics = sum(t.team_photo_count for t in wd.teams.all())
                 photo_rev += w_pics * float(wd.photographer_unit_price + wd.clown_unit_price)
 
-            seller_rev = float(sellers.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
+            seller_rev = float(sellers.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
             tot_rev = photo_rev + seller_rev
 
             avg_prod = round(pics / max(1, teams.count()), 1)
@@ -955,7 +955,7 @@ class StatisticsService:
         att_recs = AttendanceRecord.objects.filter(employee=employee, date__range=(s_date, e_date))
 
         tot_pics = perfs.aggregate(total=Coalesce(Sum('photo_count'), 0))['total']
-        tot_seller_rev = float(seller_ops.aggregate(total=Coalesce(Sum('amount'), 0))['total'])
+        tot_seller_rev = float(seller_ops.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
         max_daily = perfs.aggregate(mx=Coalesce(Max('photo_count'), 0))['mx']
 
         att_tot = att_recs.count()
