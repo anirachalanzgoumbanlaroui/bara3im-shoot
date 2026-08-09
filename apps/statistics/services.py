@@ -957,10 +957,66 @@ class StatisticsService:
         tot_pics = perfs.aggregate(total=Coalesce(Sum('photo_count'), 0))['total']
         tot_seller_rev = float(seller_ops.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
         max_daily = perfs.aggregate(mx=Coalesce(Max('photo_count'), 0))['mx']
+        min_daily = perfs.aggregate(mn=Coalesce(Min('photo_count'), 0))['mn']
+        work_days_count = perfs.count()
+        avg_daily = round(tot_pics / max(1, work_days_count), 1)
 
         att_tot = att_recs.count()
         att_pres = att_recs.filter(status__in=['present', 'late']).count()
         att_rate = round((att_pres / max(1, att_tot)) * 100, 1) if att_tot > 0 else 98.0
+
+        # Calculate Best Couple / Partner to be with
+        best_partner = None
+        if employee.role == 'photographer':
+            partner_qs = DailyTeam.objects.filter(
+                photographer=employee,
+                work_day__date__range=(s_date, e_date)
+            ).values('clown').annotate(
+                tot=Sum('team_photo_count'),
+                cnt=Count('id'),
+                avg=Avg('team_photo_count')
+            ).order_by('-tot')
+
+            if partner_qs.exists() and partner_qs[0]['clown']:
+                top_p = partner_qs[0]
+                try:
+                    p_emp = Employee.objects.get(id=top_p['clown'])
+                    best_partner = {
+                        'id': str(p_emp.id),
+                        'name': f"{p_emp.first_name} {p_emp.last_name}",
+                        'role': p_emp.role,
+                        'avatar': p_emp.avatar.url if p_emp.avatar else None,
+                        'total_pictures_together': top_p['tot'] or 0,
+                        'avg_pictures_together': round(top_p['avg'] or 0.0, 1),
+                        'sessions_count': top_p['cnt'] or 0,
+                    }
+                except Employee.DoesNotExist:
+                    pass
+        elif employee.role == 'clown':
+            partner_qs = DailyTeam.objects.filter(
+                clown=employee,
+                work_day__date__range=(s_date, e_date)
+            ).values('photographer').annotate(
+                tot=Sum('team_photo_count'),
+                cnt=Count('id'),
+                avg=Avg('team_photo_count')
+            ).order_by('-tot')
+
+            if partner_qs.exists() and partner_qs[0]['photographer']:
+                top_p = partner_qs[0]
+                try:
+                    p_emp = Employee.objects.get(id=top_p['photographer'])
+                    best_partner = {
+                        'id': str(p_emp.id),
+                        'name': f"{p_emp.first_name} {p_emp.last_name}",
+                        'role': p_emp.role,
+                        'avatar': p_emp.avatar.url if p_emp.avatar else None,
+                        'total_pictures_together': top_p['tot'] or 0,
+                        'avg_pictures_together': round(top_p['avg'] or 0.0, 1),
+                        'sessions_count': top_p['cnt'] or 0,
+                    }
+                except Employee.DoesNotExist:
+                    pass
 
         rating = min(99, max(75, int(tot_pics * 0.05 + att_rate * 0.5 + tot_seller_rev * 0.001)))
 
@@ -973,9 +1029,13 @@ class StatisticsService:
             'hiring_date': employee.hiring_date.strftime('%Y-%m-%d') if employee.hiring_date else None,
             'rating': rating,
             'total_pictures': tot_pics,
-            'total_revenue': tot_seller_rev,
+            'total_work_days': work_days_count,
+            'avg_daily_pictures': avg_daily,
             'highest_daily': max_daily,
+            'lowest_daily': min_daily,
+            'total_revenue': tot_seller_rev,
             'attendance_rate': att_rate,
+            'best_partner': best_partner,
             'career_timeline': [
                 {'year': '2026', 'event': 'Active Employee'},
             ],

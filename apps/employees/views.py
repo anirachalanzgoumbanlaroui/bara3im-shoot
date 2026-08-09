@@ -395,9 +395,11 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         activity_logs = AttendanceLog.objects.filter(employee=employee).order_by('-timestamp')[:20]
 
         from apps.attendance.serializers import AttendanceRecordSerializer, AttendanceLogSerializer
+        from apps.statistics.services import StatisticsService
 
         return Response({
             'employee': self.get_serializer(employee).data,
+            'statistics': StatisticsService.get_employee_profile_stats(employee.id),
             'attendance_records': AttendanceRecordSerializer(attendance_records, many=True).data,
             'advances': [{
                 'id': str(a.id),
