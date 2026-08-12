@@ -21,6 +21,7 @@ class StatisticsService:
     def get_date_range(time_filter='this_month', custom_start=None, custom_end=None):
         """
         Parses time_filter and returns (start_date, end_date).
+        Ensures accurate date boundaries for statistics and rankings.
         """
         today = timezone.now().date()
         
@@ -31,14 +32,20 @@ class StatisticsService:
             return y, y
         elif time_filter == 'this_week':
             start = today - timedelta(days=today.weekday())
-            return start, today
+            end = start + timedelta(days=6)
+            return start, end
         elif time_filter == 'last_week':
             end = today - timedelta(days=today.weekday() + 1)
             start = end - timedelta(days=6)
             return start, end
         elif time_filter == 'this_month':
             start = today.replace(day=1)
-            return start, today
+            if today.month == 12:
+                next_month = today.replace(year=today.year + 1, month=1, day=1)
+            else:
+                next_month = today.replace(month=today.month + 1, day=1)
+            end = next_month - timedelta(days=1)
+            return start, end
         elif time_filter == 'last_month':
             first_this_month = today.replace(day=1)
             last_month_end = first_this_month - timedelta(days=1)
@@ -46,7 +53,8 @@ class StatisticsService:
             return last_month_start, last_month_end
         elif time_filter == 'this_year':
             start = today.replace(month=1, day=1)
-            return start, today
+            end = today.replace(month=12, day=31)
+            return start, end
         elif time_filter == 'custom':
             try:
                 s = datetime.strptime(custom_start, '%Y-%m-%d').date() if isinstance(custom_start, str) else custom_start
@@ -83,25 +91,41 @@ class StatisticsService:
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
 
-        workdays_qs = WorkDay.objects.filter(date__range=(s_date, e_date))
-        perfs_qs = DailyEmployeePerformance.objects.filter(work_day__date__range=(s_date, e_date))
-        sellers_qs = SellerDailyOperation.objects.filter(work_day__date__range=(s_date, e_date))
+        workdays_qs = WorkDay.objects.filter(
+            date__range=(s_date, e_date),
+            status__in=['in_progress', 'completed', 'locked']
+        )
+        perfs_qs = DailyEmployeePerformance.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=['in_progress', 'completed', 'locked']
+        )
+        sellers_qs = SellerDailyOperation.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=['in_progress', 'completed', 'locked']
+        )
+        teams_qs = DailyTeam.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=['in_progress', 'completed', 'locked']
+        )
         attendance_qs = AttendanceRecord.objects.filter(date__range=(s_date, e_date))
 
         if location_id:
             workdays_qs = workdays_qs.filter(location_id=location_id)
             perfs_qs = perfs_qs.filter(work_day__location_id=location_id)
             sellers_qs = sellers_qs.filter(work_day__location_id=location_id)
+            teams_qs = teams_qs.filter(work_day__location_id=location_id)
+            loc_emp_ids = set(perfs_qs.values_list('employee_id', flat=True)).union(set(sellers_qs.values_list('seller_id', flat=True)))
+            attendance_qs = attendance_qs.filter(employee_id__in=loc_emp_ids)
 
         total_work_days = workdays_qs.count()
-        total_employees = Employee.objects.filter(status='active').count()
+        if location_id:
+            loc_emp_ids = set(perfs_qs.values_list('employee_id', flat=True)).union(set(sellers_qs.values_list('seller_id', flat=True)))
+            total_employees = len(loc_emp_ids) if loc_emp_ids else Employee.objects.filter(status='active').count()
+        else:
+            total_employees = Employee.objects.filter(status='active').count()
         current_active_employees = total_employees
 
-        teams_qs = DailyTeam.objects.filter(work_day__date__range=(s_date, e_date))
-        if location_id:
-            teams_qs = teams_qs.filter(work_day__location_id=location_id)
         total_pictures = teams_qs.aggregate(total=Coalesce(Sum('team_photo_count'), 0))['total']
-
         avg_pictures_per_day = round(total_pictures / max(1, total_work_days), 1)
 
         # Revenue computations
@@ -127,12 +151,16 @@ class StatisticsService:
         avg_team_performance = round(total_pictures / max(1, total_teams), 1)
 
         # Location Distribution
-        all_locations = Location.objects.all()
+        all_locations = Location.objects.filter(id=location_id) if location_id else Location.objects.all()
         loc_total_pics = 0
         loc_data = []
 
         for loc in all_locations:
-            loc_teams = DailyTeam.objects.filter(work_day__date__range=(s_date, e_date), work_day__location=loc)
+            loc_teams = DailyTeam.objects.filter(
+                work_day__date__range=(s_date, e_date),
+                work_day__location=loc,
+                work_day__status__in=['in_progress', 'completed', 'locked']
+            )
             pics = loc_teams.aggregate(total=Coalesce(Sum('team_photo_count'), 0))['total']
             loc_total_pics += pics
             loc_data.append({
@@ -206,15 +234,18 @@ class StatisticsService:
             return cached
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
-        employees = Employee.objects.filter(role=role, status='active')
 
+        # Base filter for performance records: valid workdays only
         perfs = DailyEmployeePerformance.objects.filter(
             employee__role=role,
-            work_day__date__range=(s_date, e_date)
-        )
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=['in_progress', 'completed', 'locked']
+        ).select_related('employee', 'work_day')
+
         if location_id:
             perfs = perfs.filter(work_day__location_id=location_id)
 
+        # Bulk aggregate performance
         perf_map = {}
         for item in perfs.values('employee_id').annotate(
             tot_pics=Coalesce(Sum('photo_count'), 0),
@@ -223,52 +254,104 @@ class StatisticsService:
         ):
             perf_map[item['employee_id']] = item
 
+        if not perf_map:
+            emp_ids = list(Employee.objects.filter(role=role, status='active').values_list('id', flat=True))
+        else:
+            emp_ids = list(perf_map.keys())
+
+        # Bulk fetch employee instances (including historical ones with performance records)
+        emp_dict = {
+            str(emp.id): emp for emp in Employee.objects.filter(id__in=emp_ids)
+        }
+
+        # Bulk fetch attendance
         att_map = {}
         for item in AttendanceRecord.objects.filter(
-            employee__role=role, date__range=(s_date, e_date)
+            employee_id__in=emp_ids, date__range=(s_date, e_date)
         ).values('employee_id').annotate(
             tot=Count('id'),
             pres=Count('id', filter=Q(status__in=['present', 'late']))
         ):
-            att_map[item['employee_id']] = item
+            att_map[str(item['employee_id'])] = item
 
         leaderboard_data = []
-        for emp in employees:
-            p_data = perf_map.get(emp.id) or perf_map.get(str(emp.id)) or {}
+        for emp_id_str, emp in emp_dict.items():
+            emp_uuid = emp.id
+            p_data = perf_map.get(emp_uuid) or perf_map.get(emp_id_str) or {}
             tot_pics = p_data.get('tot_pics', 0)
             work_days_cnt = p_data.get('cnt', 0)
-            avg_pics = round(tot_pics / max(1, work_days_cnt), 1)
+            avg_pics = round(tot_pics / max(1, work_days_cnt), 1) if work_days_cnt > 0 else 0.0
             max_daily = p_data.get('mx', 0)
 
-            a_data = att_map.get(emp.id) or att_map.get(str(emp.id)) or {}
+            a_data = att_map.get(emp_id_str) or {}
             att_total = a_data.get('tot', 0)
             att_present = a_data.get('pres', 0)
             att_rate = round((att_present / max(1, att_total)) * 100, 1) if att_total > 0 else 95.0
 
-            prod_score = min(99, max(60, int(avg_pics * 0.4 + att_rate * 0.5 + min(20, max_daily * 0.1))))
+            if work_days_cnt > 0:
+                prod_score = min(99, max(60, int(avg_pics * 0.4 + att_rate * 0.3 + min(20, max_daily * 0.1) + min(15, work_days_cnt * 2))))
+            else:
+                prod_score = 0
+
+            unit_p = 45.0 if role == 'photographer' else 50.0
+            total_earnings = float(tot_pics * unit_p)
+            avg_earnings = round(total_earnings / max(1, work_days_cnt), 2) if work_days_cnt > 0 else 0.0
 
             leaderboard_data.append({
                 'employee_id': str(emp.id),
                 'name': f"{emp.first_name} {emp.last_name}",
-                'employee_code': emp.employee_code,
+                'employee_code': emp.employee_code or str(emp.id)[:8],
                 'avatar': emp.avatar.url if emp.avatar else None,
                 'role': emp.role,
-                'total_pictures': tot_pics,
-                'work_days_count': work_days_cnt,
-                'avg_pictures': avg_pics,
-                'highest_daily': max_daily,
+                'score': prod_score,
                 'productivity_score': prod_score,
+                'total_pictures': tot_pics,
+                'total_photos': tot_pics,
+                'work_days_count': work_days_cnt,
+                'working_days': work_days_cnt,
+                'avg_pictures': avg_pics,
+                'average_photos': avg_pics,
+                'total_earnings': total_earnings,
+                'average_earnings': avg_earnings,
+                'highest_daily': max_daily,
+                'best_day': max_daily,
                 'attendance_rate': att_rate,
-                'streak': max(1, work_days_cnt // 2),
+                'streak': max(1, work_days_cnt // 2) if work_days_cnt > 0 else 0,
             })
 
-        leaderboard_data.sort(key=lambda x: (x['total_pictures'], x['avg_pictures']), reverse=True)
+        # Deterministic sorting:
+        # Primary: productivity_score DESC
+        # Secondary: total_pictures DESC
+        # Tertiary: avg_pictures DESC
+        # Quaternary: work_days_count DESC
+        # Tie-breaker: employee_code ASC, employee_id ASC
+        leaderboard_data.sort(key=lambda x: (
+            -x['productivity_score'],
+            -x['total_pictures'],
+            -x['avg_pictures'],
+            -x['work_days_count'],
+            x['employee_code'],
+            x['employee_id']
+        ))
+
         for idx, item in enumerate(leaderboard_data):
             item['rank'] = idx + 1
+            if idx == 0:
+                item['badge_name'] = 'NADJIB' if time_filter == 'overall' else ('TARGI' if role == 'clown' else 'KING')
+                item['badge'] = '🏆'
+            elif idx == 1:
+                item['badge_name'] = 'TARGI'
+                item['badge'] = '🎯'
+            elif idx == 2:
+                item['badge_name'] = 'MESSI'
+                item['badge'] = '🐐'
+            else:
+                item['badge_name'] = 'AGENT'
+                item['badge'] = '🛡️'
 
         best_ever = leaderboard_data[0] if leaderboard_data else None
         most_consistent = max(leaderboard_data, key=lambda x: x['attendance_rate']) if leaderboard_data else None
-        most_improved = sorted(leaderboard_data, key=lambda x: x['productivity_score'], reverse=True)[0] if leaderboard_data else None
+        most_improved = leaderboard_data[0] if leaderboard_data else None
 
         total_role_pics = sum(x['total_pictures'] for x in leaderboard_data)
         avg_role_pics = round(total_role_pics / max(1, len(leaderboard_data)), 1)
@@ -322,11 +405,12 @@ class StatisticsService:
             return cached
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
-        sellers = Employee.objects.filter(role='seller', status='active')
 
         seller_ops = SellerDailyOperation.objects.filter(
-            work_day__date__range=(s_date, e_date)
-        )
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=['in_progress', 'completed', 'locked']
+        ).select_related('seller', 'work_day')
+
         if location_id:
             seller_ops = seller_ops.filter(work_day__location_id=location_id)
 
@@ -338,46 +422,68 @@ class StatisticsService:
         ):
             ops_map[item['seller_id']] = item
 
+        if not ops_map:
+            seller_ids = list(Employee.objects.filter(role='seller', status='active').values_list('id', flat=True))
+        else:
+            seller_ids = list(ops_map.keys())
+
+        sellers_dict = {
+            str(emp.id): emp for emp in Employee.objects.filter(id__in=seller_ids)
+        }
+
         att_map = {}
         for item in AttendanceRecord.objects.filter(
-            employee__role='seller', date__range=(s_date, e_date)
+            employee_id__in=seller_ids, date__range=(s_date, e_date)
         ).values('employee_id').annotate(
             tot=Count('id'),
             pres=Count('id', filter=Q(status__in=['present', 'late']))
         ):
-            att_map[item['employee_id']] = item
+            att_map[str(item['employee_id'])] = item
 
         leaderboard = []
-        for seller in sellers:
-            o_data = ops_map.get(seller.id) or ops_map.get(str(seller.id)) or {}
+        for seller_id_str, seller in sellers_dict.items():
+            o_data = ops_map.get(seller.id) or ops_map.get(seller_id_str) or {}
             tot_rev = float(o_data.get('tot_rev', 0))
             cnt = o_data.get('cnt', 0)
-            avg_rev = round(tot_rev / max(1, cnt), 2)
+            avg_rev = round(tot_rev / max(1, cnt), 2) if cnt > 0 else 0.0
             max_daily = float(o_data.get('mx', 0))
 
-            a_data = att_map.get(seller.id) or att_map.get(str(seller.id)) or {}
+            a_data = att_map.get(seller_id_str) or {}
             att_tot = a_data.get('tot', 0)
             att_pres = a_data.get('pres', 0)
             att_rate = round((att_pres / max(1, att_tot)) * 100, 1) if att_tot > 0 else 96.0
 
-            consistency_score = min(99, max(70, int(att_rate * 0.6 + min(40, cnt * 2))))
+            consistency_score = min(99, max(70, int(att_rate * 0.6 + min(40, cnt * 2)))) if cnt > 0 else 0
 
             leaderboard.append({
                 'employee_id': str(seller.id),
                 'name': f"{seller.first_name} {seller.last_name}",
-                'employee_code': seller.employee_code,
+                'employee_code': seller.employee_code or str(seller.id)[:8],
                 'avatar': seller.avatar.url if seller.avatar else None,
+                'score': consistency_score,
                 'total_revenue': tot_rev,
                 'work_days_count': cnt,
+                'working_days': cnt,
                 'avg_revenue': avg_rev,
                 'highest_daily': max_daily,
+                'best_day': max_daily,
                 'attendance_rate': att_rate,
                 'consistency_score': consistency_score,
             })
 
-        leaderboard.sort(key=lambda x: (x['total_revenue'], x['avg_revenue']), reverse=True)
+        # Deterministic sorting
+        leaderboard.sort(key=lambda x: (
+            -x['total_revenue'],
+            -x['avg_revenue'],
+            -x['work_days_count'],
+            x['employee_code'],
+            x['employee_id']
+        ))
+
         for idx, item in enumerate(leaderboard):
             item['rank'] = idx + 1
+            item['badge_name'] = 'AGENT'
+            item['badge'] = '🛡️'
 
         best_seller_ever = leaderboard[0] if leaderboard else None
         tot_seller_revenue = sum(x['total_revenue'] for x in leaderboard)
@@ -438,7 +544,8 @@ class StatisticsService:
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
 
         teams_qs = DailyTeam.objects.filter(
-            work_day__date__range=(s_date, e_date)
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=['in_progress', 'completed', 'locked']
         ).select_related('photographer', 'clown', 'work_day')
 
         if location_id:
@@ -484,16 +591,30 @@ class StatisticsService:
                 },
                 'team_name': item['team_name'],
                 'total_pictures': item['total_pictures'],
+                'total_photos': item['total_pictures'],
                 'sessions_count': item['sessions_count'],
+                'working_days': item['sessions_count'],
                 'avg_pictures': avg_pics,
+                'average_photos': avg_pics,
                 'highest_daily': item['highest_daily'],
+                'best_day': item['highest_daily'],
                 'winning_streak': streak,
                 'productivity_score': prod,
+                'score': prod,
             })
 
-        couples_list.sort(key=lambda x: (x['total_pictures'], x['avg_pictures']), reverse=True)
+        # Deterministic sorting
+        couples_list.sort(key=lambda x: (
+            -x['total_pictures'],
+            -x['avg_pictures'],
+            -x['sessions_count'],
+            x['couple_id']
+        ))
+
         for idx, item in enumerate(couples_list):
             item['rank'] = idx + 1
+            item['badge_name'] = 'COUPLE'
+            item['badge'] = '👑'
 
         best_couple_ever = couples_list[0] if couples_list else None
         most_pictures_together = max(couples_list, key=lambda x: x['total_pictures']) if couples_list else None
@@ -527,6 +648,15 @@ class StatisticsService:
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
         records = AttendanceRecord.objects.filter(date__range=(s_date, e_date))
 
+        if location_id:
+            loc_perfs = DailyEmployeePerformance.objects.filter(work_day__location_id=location_id, work_day__date__range=(s_date, e_date))
+            loc_sellers = SellerDailyOperation.objects.filter(work_day__location_id=location_id, work_day__date__range=(s_date, e_date))
+            loc_emp_ids = set(loc_perfs.values_list('employee_id', flat=True)).union(set(loc_sellers.values_list('seller_id', flat=True)))
+            records = records.filter(employee_id__in=loc_emp_ids)
+            employees = Employee.objects.filter(id__in=loc_emp_ids)
+        else:
+            employees = Employee.objects.filter(status='active')
+
         tot_records = records.count()
         present_cnt = records.filter(status='present').count()
         late_cnt = records.filter(status='late').count()
@@ -534,7 +664,6 @@ class StatisticsService:
 
         att_rate = round(((present_cnt + late_cnt) / max(1, tot_records)) * 100, 1) if tot_records > 0 else 95.0
 
-        employees = Employee.objects.filter(status='active')
         emp_att_map = {}
         for item in records.values('employee_id').annotate(
             tot=Count('id'),
@@ -542,13 +671,13 @@ class StatisticsService:
             late=Count('id', filter=Q(status='late')),
             absent=Count('id', filter=Q(status='absent'))
         ):
-            emp_att_map[item['employee_id']] = item
+            emp_att_map[str(item['employee_id'])] = item
 
         perfect_attendance_list = []
         ranking_list = []
 
         for emp in employees:
-            a_data = emp_att_map.get(emp.id) or emp_att_map.get(str(emp.id)) or {}
+            a_data = emp_att_map.get(str(emp.id)) or emp_att_map.get(emp.id) or {}
             emp_tot = a_data.get('tot', 0)
             emp_pres = a_data.get('pres', 0)
             emp_late = a_data.get('late', 0)
@@ -627,14 +756,23 @@ class StatisticsService:
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
 
-        workdays_qs = WorkDay.objects.filter(date__range=(s_date, e_date))
-        sellers_qs = SellerDailyOperation.objects.filter(work_day__date__range=(s_date, e_date))
+        workdays_qs = WorkDay.objects.filter(
+            date__range=(s_date, e_date),
+            status__in=['in_progress', 'completed', 'locked']
+        )
+        sellers_qs = SellerDailyOperation.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=['in_progress', 'completed', 'locked']
+        )
         bonuses_qs = Bonus.objects.filter(date__range=(s_date, e_date))
         deductions_qs = Deduction.objects.filter(date__range=(s_date, e_date))
 
         if location_id:
             workdays_qs = workdays_qs.filter(location_id=location_id)
             sellers_qs = sellers_qs.filter(work_day__location_id=location_id)
+            loc_emp_ids = set(DailyEmployeePerformance.objects.filter(work_day__location_id=location_id, work_day__date__range=(s_date, e_date)).values_list('employee_id', flat=True)).union(set(sellers_qs.values_list('seller_id', flat=True)))
+            bonuses_qs = bonuses_qs.filter(employee_id__in=loc_emp_ids)
+            deductions_qs = deductions_qs.filter(employee_id__in=loc_emp_ids)
 
         photo_revenue = 0
         for wd in workdays_qs.prefetch_related('teams'):
@@ -650,11 +788,16 @@ class StatisticsService:
         total_deductions = float(deductions_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
 
         net_salary = total_revenue + total_bonuses - total_deductions
-        emp_count = Employee.objects.filter(status='active').count()
-        avg_salary = round(net_salary / max(1, emp_count), 2)
+        if location_id:
+            loc_emp_count = len(loc_emp_ids) if loc_emp_ids else 1
+            avg_salary = round(net_salary / max(1, loc_emp_count), 2)
+        else:
+            emp_count = Employee.objects.filter(status='active').count()
+            avg_salary = round(net_salary / max(1, emp_count), 2)
 
         revenue_by_location = []
-        for loc in Location.objects.all():
+        loc_qs = Location.objects.filter(id=location_id) if location_id else Location.objects.all()
+        for loc in loc_qs:
             l_workdays = workdays_qs.filter(location=loc)
             l_sellers = sellers_qs.filter(work_day__location=loc)
             l_photo_rev = 0
@@ -737,9 +880,9 @@ class StatisticsService:
         comparison_list = []
 
         for loc in locations:
-            workdays = WorkDay.objects.filter(location=loc, date__range=(s_date, e_date))
-            teams = DailyTeam.objects.filter(work_day__location=loc, work_day__date__range=(s_date, e_date))
-            sellers = SellerDailyOperation.objects.filter(work_day__location=loc, work_day__date__range=(s_date, e_date))
+            workdays = WorkDay.objects.filter(location=loc, date__range=(s_date, e_date), status__in=['in_progress', 'completed', 'locked'])
+            teams = DailyTeam.objects.filter(work_day__location=loc, work_day__date__range=(s_date, e_date), work_day__status__in=['in_progress', 'completed', 'locked'])
+            sellers = SellerDailyOperation.objects.filter(work_day__location=loc, work_day__date__range=(s_date, e_date), work_day__status__in=['in_progress', 'completed', 'locked'])
 
             pics = teams.aggregate(total=Coalesce(Sum('team_photo_count'), 0))['total']
             
@@ -947,17 +1090,141 @@ class StatisticsService:
     # --------------------------------------------------------------------------
     # NADJIB LEGENDARY WINNER CALCULATION
     # --------------------------------------------------------------------------
+    # NADJIB LEGENDARY WINNER CALCULATION & FIFA REVEAL
+    # --------------------------------------------------------------------------
+    @classmethod
+    def get_fifa_reveal(cls, category='nadjib', time_filter='this_month', location_id=None, start_date=None, end_date=None):
+        """
+        Unified FIFA Player Reveal calculation engine.
+        Returns the top winner card for the requested category, period, and location.
+        """
+        cache_key = f"stats_fifa_{category}_{time_filter}_{location_id}_{start_date}_{end_date}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
+        loc_obj = Location.objects.filter(id=location_id).first() if location_id else None
+        loc_name = loc_obj.name if loc_obj else "ALL LOCATIONS"
+
+        if category == 'nadjib' or category == 'overall':
+            winner = cls.get_nadjib_winner(time_filter, location_id, start_date, end_date)
+            card_data = {
+                'rating': winner['score'] if winner else 0,
+                'badge': '🏆',
+                'badge_name': 'NADJIB',
+                'title': 'NADJIB LEGENDARY WINNER',
+                'name': winner['name'] if winner else 'No Performer Recorded',
+                'role': (winner['role'] if winner else 'Overall').upper(),
+                'avatar': winner['avatar'] if winner else None,
+                'avg_pictures': str(winner['avg_daily_pictures']) if winner else '0.0',
+                'total_pictures': str(winner['total_pictures']) if winner else '0',
+                'work_days': winner['work_days_count'] if winner else 0,
+                'attendance_rate': winner['attendance_rate'] if winner else 0.0,
+                'awards_count': 1 if winner else 0,
+                'winning_streak': winner['streak'] if winner else 0,
+                'current_rank': 1,
+                'location_name': loc_name,
+                'location_id': str(location_id) if location_id else None,
+                'period_start': s_date.strftime('%Y-%m-%d'),
+                'period_end': e_date.strftime('%Y-%m-%d'),
+            }
+        elif category == 'photographer':
+            stats = cls.get_role_stats('photographer', time_filter, location_id, start_date, end_date)
+            best = stats.get('best_ever')
+            card_data = {
+                'rating': best['score'] if best else 0,
+                'badge': '🏆',
+                'badge_name': 'KING',
+                'title': 'Best Photographer',
+                'name': best['name'] if best else 'No Photographer Recorded',
+                'role': 'PHOTOGRAPHER',
+                'avatar': best['avatar'] if best else None,
+                'avg_pictures': str(best['avg_pictures']) if best else '0.0',
+                'total_pictures': str(best['total_pictures']) if best else '0',
+                'awards_count': 1 if best else 0,
+                'winning_streak': best['streak'] if best else 0,
+                'current_rank': 1,
+                'location_name': loc_name,
+                'location_id': str(location_id) if location_id else None,
+                'period_start': s_date.strftime('%Y-%m-%d'),
+                'period_end': e_date.strftime('%Y-%m-%d'),
+            }
+        elif category == 'clown':
+            stats = cls.get_role_stats('clown', time_filter, location_id, start_date, end_date)
+            best = stats.get('best_ever')
+            card_data = {
+                'rating': best['score'] if best else 0,
+                'badge': '🤡',
+                'badge_name': 'TARGI',
+                'title': 'Best Clown',
+                'name': best['name'] if best else 'No Clown Recorded',
+                'role': 'CLOWN',
+                'avatar': best['avatar'] if best else None,
+                'avg_pictures': str(best['avg_pictures']) if best else '0.0',
+                'total_pictures': str(best['total_pictures']) if best else '0',
+                'awards_count': 1 if best else 0,
+                'winning_streak': best['streak'] if best else 0,
+                'current_rank': 1,
+                'location_name': loc_name,
+                'location_id': str(location_id) if location_id else None,
+                'period_start': s_date.strftime('%Y-%m-%d'),
+                'period_end': e_date.strftime('%Y-%m-%d'),
+            }
+        elif category == 'seller':
+            stats = cls.get_seller_stats(time_filter, location_id, start_date, end_date)
+            best = stats.get('best_seller_ever')
+            card_data = {
+                'rating': best['score'] if best else 0,
+                'badge': '🛡️',
+                'badge_name': 'AGENT',
+                'title': 'Best Seller',
+                'name': best['name'] if best else 'No Seller Recorded',
+                'role': 'SELLER',
+                'avatar': best['avatar'] if best else None,
+                'avg_pictures': f"{best['avg_revenue']} DA" if best else '0 DA',
+                'total_pictures': f"{best['total_revenue']} DA" if best else '0 DA',
+                'awards_count': 1 if best else 0,
+                'winning_streak': 0,
+                'current_rank': 1,
+                'location_name': loc_name,
+                'location_id': str(location_id) if location_id else None,
+                'period_start': s_date.strftime('%Y-%m-%d'),
+                'period_end': e_date.strftime('%Y-%m-%d'),
+            }
+        else: # couple
+            stats = cls.get_couple_stats(time_filter, location_id, start_date, end_date)
+            best = stats.get('best_couple_ever')
+            card_data = {
+                'rating': best['score'] if best else 0,
+                'badge': '👑',
+                'badge_name': 'COUPLE',
+                'title': 'Best Couple',
+                'name': best['team_name'] if best else 'No Team Recorded',
+                'role': 'PHOTOGRAPHER + CLOWN',
+                'avatar': None,
+                'avg_pictures': str(best['avg_pictures']) if best else '0.0',
+                'total_pictures': str(best['total_pictures']) if best else '0',
+                'awards_count': 1 if best else 0,
+                'winning_streak': best['winning_streak'] if best else 0,
+                'current_rank': 1,
+                'location_name': loc_name,
+                'location_id': str(location_id) if location_id else None,
+                'period_start': s_date.strftime('%Y-%m-%d'),
+                'period_end': e_date.strftime('%Y-%m-%d'),
+            }
+
+        try:
+            cache.set(cache_key, card_data, CACHE_TIMEOUT)
+        except Exception:
+            pass
+        return card_data
+
     @classmethod
     def get_nadjib_winner(cls, time_filter='this_month', location_id=None, start_date=None, end_date=None):
         """
         Calculates the overall top performing employee for the legendary NADJIB badge.
-        Calculations respect location scoping and statistical time ranges.
-        Tie-breaking hierarchy:
-        1. Performance Score (highest)
-        2. Average Daily Pictures (highest)
-        3. Work Days Count (highest)
-        4. Total Pictures (highest)
-        5. Employee UUID (stable alphabetical fallback)
+        Optimized SQL aggregation and deterministic tie-breaking.
         """
         cache_key = f"stats_nadjib_{time_filter}_{location_id}_{start_date}_{end_date}"
         cached = cache.get(cache_key)
@@ -965,69 +1232,113 @@ class StatisticsService:
             return cached
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
-        employees = Employee.objects.filter(status='active', is_active=True)
 
+        perfs_qs = DailyEmployeePerformance.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=['in_progress', 'completed', 'locked']
+        )
+        seller_qs = SellerDailyOperation.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=['in_progress', 'completed', 'locked']
+        )
+
+        if location_id:
+            perfs_qs = perfs_qs.filter(work_day__location_id=location_id)
+            seller_qs = seller_qs.filter(work_day__location_id=location_id)
+
+        # Bulk SQL aggregations
+        perf_summary = {
+            item['employee_id']: item for item in perfs_qs.values('employee_id').annotate(
+                tot_pics=Coalesce(Sum('photo_count'), 0),
+                work_days=Count('work_day', distinct=True),
+                max_daily=Coalesce(Max('photo_count'), 0)
+            )
+        }
+
+        seller_summary = {
+            item['seller_id']: item for item in seller_qs.values('seller_id').annotate(
+                tot_rev=Coalesce(Sum('amount'), 0, output_field=FloatField()),
+                work_days=Count('work_day', distinct=True)
+            )
+        }
+
+        active_emp_ids = set(perf_summary.keys()).union(seller_summary.keys())
+        if not active_emp_ids:
+            active_emp_ids = set(Employee.objects.filter(status='active').values_list('id', flat=True))
+
+        employees = Employee.objects.filter(id__in=active_emp_ids)
         if not employees.exists():
             return None
 
+        att_summary = {
+            str(item['employee_id']): item for item in AttendanceRecord.objects.filter(
+                employee_id__in=active_emp_ids,
+                date__range=(s_date, e_date)
+            ).values('employee_id').annotate(
+                tot=Count('id'),
+                pres=Count('id', filter=Q(status__in=['present', 'late']))
+            )
+        }
+
         candidates = []
         for emp in employees:
-            perfs_qs = DailyEmployeePerformance.objects.filter(
-                employee=emp,
-                work_day__date__range=(s_date, e_date)
-            )
-            seller_qs = SellerDailyOperation.objects.filter(
-                seller=emp,
-                work_day__date__range=(s_date, e_date)
-            )
-            att_qs = AttendanceRecord.objects.filter(
-                employee=emp,
-                date__range=(s_date, e_date)
-            )
+            emp_id_str = str(emp.id)
+            p_data = perf_summary.get(emp.id) or perf_summary.get(emp_id_str) or {}
+            s_data = seller_summary.get(emp.id) or seller_summary.get(emp_id_str) or {}
+            a_data = att_summary.get(emp_id_str) or {}
 
-            if location_id:
-                perfs_qs = perfs_qs.filter(work_day__location_id=location_id)
-                seller_qs = seller_qs.filter(work_day__location_id=location_id)
+            tot_pics = p_data.get('tot_pics', 0)
+            work_days = p_data.get('work_days', 0) or s_data.get('work_days', 0)
+            max_daily = p_data.get('max_daily', 0)
+            tot_rev = float(s_data.get('tot_rev', 0))
 
-            tot_pics = perfs_qs.aggregate(total=Coalesce(Sum('photo_count'), 0))['total']
-            tot_rev = float(seller_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
-            work_days = perfs_qs.count()
-            avg_pics = round(tot_pics / max(1, work_days), 1)
-            max_daily = perfs_qs.aggregate(mx=Coalesce(Max('photo_count'), 0))['mx']
+            avg_pics = round(tot_pics / max(1, work_days), 1) if work_days > 0 else 0.0
 
-            att_tot = att_qs.count()
-            att_pres = att_qs.filter(status__in=['present', 'late']).count()
+            att_tot = a_data.get('tot', 0)
+            att_pres = a_data.get('pres', 0)
             att_rate = round((att_pres / max(1, att_tot)) * 100, 1) if att_tot > 0 else 98.0
 
-            raw_score = (avg_pics * 0.4) + (work_days * 4) + (att_rate * 0.2) + min(tot_pics * 0.05, 20) + (tot_rev * 0.001)
-            perf_score = min(99, max(70, int(raw_score))) if (work_days > 0 or tot_rev > 0) else 70
+            if work_days > 0 or tot_rev > 0:
+                raw_score = (avg_pics * 0.4) + (work_days * 3) + (att_rate * 0.2) + min(tot_pics * 0.05, 20) + (tot_rev * 0.001)
+                perf_score = min(99, max(70, int(raw_score)))
+            else:
+                perf_score = 0
 
             candidates.append({
                 'employee': emp,
-                'employee_id': str(emp.id),
+                'employee_id': emp_id_str,
                 'name': f"{emp.first_name} {emp.last_name}",
-                'employee_code': emp.employee_code,
+                'employee_code': emp.employee_code or emp_id_str[:8],
                 'role': emp.role,
                 'avatar': emp.avatar.url if emp.avatar else None,
                 'score': perf_score,
                 'total_pictures': tot_pics,
+                'total_photos': tot_pics,
                 'avg_daily_pictures': avg_pics,
+                'average_photos': avg_pics,
                 'work_days_count': work_days,
+                'working_days': work_days,
                 'highest_daily': max_daily,
+                'best_day': max_daily,
                 'attendance_rate': att_rate,
                 'total_revenue': tot_rev,
+                'streak': max(1, work_days // 2) if work_days > 0 else 0,
+                'rank': 1,
                 'badge': '🏆 NADJIB',
                 'badge_name': 'NADJIB',
                 'is_legendary': True,
             })
 
+        # Deterministic sorting for winner:
         candidates.sort(key=lambda c: (
-            c['score'],
-            c['avg_daily_pictures'],
-            c['work_days_count'],
-            c['total_pictures'],
+            -c['score'],
+            -c['avg_daily_pictures'],
+            -c['work_days_count'],
+            -c['total_pictures'],
+            -c['total_revenue'],
+            c['employee_code'],
             c['employee_id']
-        ), reverse=True)
+        ))
 
         winner = candidates[0] if candidates else None
 
@@ -1069,8 +1380,8 @@ class StatisticsService:
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
 
-        perfs = DailyEmployeePerformance.objects.filter(employee=employee, work_day__date__range=(s_date, e_date))
-        seller_ops = SellerDailyOperation.objects.filter(seller=employee, work_day__date__range=(s_date, e_date))
+        perfs = DailyEmployeePerformance.objects.filter(employee=employee, work_day__date__range=(s_date, e_date), work_day__status__in=['in_progress', 'completed', 'locked'])
+        seller_ops = SellerDailyOperation.objects.filter(seller=employee, work_day__date__range=(s_date, e_date), work_day__status__in=['in_progress', 'completed', 'locked'])
         att_recs = AttendanceRecord.objects.filter(employee=employee, date__range=(s_date, e_date))
 
         tot_pics = perfs.aggregate(total=Coalesce(Sum('photo_count'), 0))['total']

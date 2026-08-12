@@ -370,6 +370,7 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
                 "location": work_day.location.name,
             }
         )
+        StatisticsService.clear_cache()
 
     def perform_update(self, serializer):
         team = serializer.save()
@@ -384,6 +385,16 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
             team.work_day, "Team Edited", self.request.user,
             {"team_id": str(team.id), "location": team.work_day.location.name}
         )
+        StatisticsService.clear_cache()
+
+    def perform_destroy(self, instance):
+        work_day = instance.work_day
+        super().perform_destroy(instance)
+        DailyOperationsService.log_action(
+            work_day, "Team Deleted", self.request.user,
+            {"team_id": str(instance.id), "location": work_day.location.name}
+        )
+        StatisticsService.clear_cache()
 
     @action(detail=False, methods=['post'], url_path='quick-entry')
     def quick_entry(self, request):
@@ -403,6 +414,7 @@ class DailyTeamViewSet(viewsets.ModelViewSet):
                 DailyOperationsService.quick_entry_update_team(team, int(new_count), request.user)
                 updated_teams.append(str(team.id))
 
+        StatisticsService.clear_cache()
         return Response({"detail": f"Updated {len(updated_teams)} teams."})
 
 
@@ -437,6 +449,7 @@ class DailyEmployeePerformanceViewSet(viewsets.ModelViewSet):
                 "location": perf.work_day.location.name,
             }
         )
+        StatisticsService.clear_cache()
 
 
 class DailyOperationLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -472,6 +485,18 @@ class SellerDailyOperationViewSet(viewsets.ModelViewSet):
             if str(work_day.location_id) != str(location_id):
                 raise ValidationError("work_day does not belong to the specified location.")
         return qs
+
+    def perform_create(self, serializer):
+        op = serializer.save()
+        StatisticsService.clear_cache()
+
+    def perform_update(self, serializer):
+        op = serializer.save()
+        StatisticsService.clear_cache()
+
+    def perform_destroy(self, instance):
+        super().perform_destroy(instance)
+        StatisticsService.clear_cache()
 
     @action(detail=False, methods=['post'], url_path='bulk-save')
     def bulk_save(self, request):
@@ -512,6 +537,7 @@ class SellerDailyOperationViewSet(viewsets.ModelViewSet):
             work_day, "Seller Earnings Bulk Saved", request.user,
             {"count": len(saved_seller_ids), "location": work_day.location.name}
         )
+        StatisticsService.clear_cache()
 
         updated_ops = SellerDailyOperation.objects.filter(work_day=work_day)
         serializer = self.get_serializer(updated_ops, many=True)
