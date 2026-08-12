@@ -73,8 +73,31 @@ class WorkDayViewSet(viewsets.ModelViewSet):
                 'location': LocationSerializer(location).data,
                 'date': date,
                 'status': 'empty',
-                'photographer_unit_price': '0.00',
-                'clown_unit_price': '0.00',
+                'photographer_unit_price': '45.00',
+                'clown_unit_price': '50.00',
+                'dynamic_pricing_enabled': False,
+                'low_photo_threshold': 40,
+                'high_photo_threshold': 80,
+                'low_photographer_price': '40.00',
+                'low_clown_price': '45.00',
+                'high_photographer_price': '50.00',
+                'high_clown_price': '55.00',
+                'is_manually_overridden': False,
+                'override_photographer_price': None,
+                'override_clown_price': None,
+                'pricing': {
+                    'dynamic_enabled': False,
+                    'is_manually_overridden': False,
+                    'tier': 'normal',
+                    'total_photos': 0,
+                    'photographer': {
+                        'normal': 45.0, 'low': 40.0, 'high': 50.0, 'override': None, 'current': 45.0
+                    },
+                    'clown': {
+                        'normal': 50.0, 'low': 45.0, 'high': 55.0, 'override': None, 'current': 50.0
+                    },
+                    'thresholds': {'low': 40, 'high': 80}
+                },
                 'notes': None,
                 'teams': [],
                 'seller_operations': [],
@@ -115,26 +138,40 @@ class WorkDayViewSet(viewsets.ModelViewSet):
 
         location = get_object_or_404(Location, id=location_id)
 
+        defaults = {
+            'photographer_unit_price': data.get('photographer_unit_price', 45),
+            'clown_unit_price': data.get('clown_unit_price', 50),
+            'dynamic_pricing_enabled': data.get('dynamic_pricing_enabled', False),
+            'low_photo_threshold': data.get('low_photo_threshold', 40),
+            'high_photo_threshold': data.get('high_photo_threshold', 80),
+            'low_photographer_price': data.get('low_photographer_price', 40),
+            'low_clown_price': data.get('low_clown_price', 45),
+            'high_photographer_price': data.get('high_photographer_price', 50),
+            'high_clown_price': data.get('high_clown_price', 55),
+            'is_manually_overridden': data.get('is_manually_overridden', False),
+            'override_photographer_price': data.get('override_photographer_price'),
+            'override_clown_price': data.get('override_clown_price'),
+            'notes': data.get('notes', ''),
+            'status': data.get('status', WorkDay.Status.DRAFT),
+            'created_by': request.user,
+        }
+
         work_day, created = WorkDay.objects.get_or_create(
             location=location,
             date=date,
-            defaults={
-                'photographer_unit_price': data.get('photographer_unit_price', 0),
-                'clown_unit_price': data.get('clown_unit_price', 0),
-                'notes': data.get('notes', ''),
-                'status': data.get('status', WorkDay.Status.DRAFT),
-                'created_by': request.user,
-            }
+            defaults=defaults
         )
         if not created:
-            if 'photographer_unit_price' in data:
-                work_day.photographer_unit_price = data['photographer_unit_price']
-            if 'clown_unit_price' in data:
-                work_day.clown_unit_price = data['clown_unit_price']
-            if 'notes' in data:
-                work_day.notes = data['notes']
-            if 'status' in data:
-                work_day.status = data['status']
+            for field in [
+                'photographer_unit_price', 'clown_unit_price',
+                'dynamic_pricing_enabled', 'low_photo_threshold', 'high_photo_threshold',
+                'low_photographer_price', 'low_clown_price',
+                'high_photographer_price', 'high_clown_price',
+                'is_manually_overridden', 'override_photographer_price', 'override_clown_price',
+                'notes', 'status'
+            ]:
+                if field in data:
+                    setattr(work_day, field, data[field])
             work_day.save()
 
         # Update existing teams photo count

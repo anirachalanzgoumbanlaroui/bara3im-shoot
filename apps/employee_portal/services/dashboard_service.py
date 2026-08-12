@@ -50,7 +50,8 @@ class EmployeeDashboardService:
                 'clown': f"{team.clown.first_name} {team.clown.last_name}",
             }
 
-            unit_price = wd.photographer_unit_price if role == 'photographer' else wd.clown_unit_price
+            res = wd.get_resolved_unit_prices()
+            unit_price = res['photographer_unit_price'] if role == 'photographer' else res['clown_unit_price']
             earnings = float(performance.photo_count * unit_price)
 
             performance_data = {
@@ -65,7 +66,8 @@ class EmployeeDashboardService:
         ).select_related('work_day')
         gross_earnings = 0.0
         for p in all_performances:
-            u_price = p.work_day.photographer_unit_price if role == 'photographer' else p.work_day.clown_unit_price
+            res = p.work_day.get_resolved_unit_prices()
+            u_price = res['photographer_unit_price'] if role == 'photographer' else res['clown_unit_price']
             gross_earnings += float(p.photo_count * u_price)
 
         late_records_count = AttendanceRecord.objects.filter(employee=employee, status='late').count()
@@ -95,16 +97,18 @@ class EmployeeDashboardService:
 
         unit_price_today = 0.0
         if performance:
+            res = performance.work_day.get_resolved_unit_prices()
             unit_price_today = float(
-                performance.work_day.photographer_unit_price if role == 'photographer'
-                else performance.work_day.clown_unit_price
+                res['photographer_unit_price'] if role == 'photographer'
+                else res['clown_unit_price']
             )
         else:
             latest_workday = WorkDay.objects.order_by('-date').first()
             if latest_workday:
+                res = latest_workday.get_resolved_unit_prices()
                 unit_price_today = float(
-                    latest_workday.photographer_unit_price if role == 'photographer'
-                    else latest_workday.clown_unit_price
+                    res['photographer_unit_price'] if role == 'photographer'
+                    else res['clown_unit_price']
                 )
 
         estimated_earnings = float(today_photos * unit_price_today)
@@ -349,7 +353,8 @@ class EmployeeDashboardService:
         best_earnings_val = 0.0
         best_earnings_date = None
         for p in all_perf_asc:
-            u_price = p.work_day.photographer_unit_price if role == 'photographer' else p.work_day.clown_unit_price
+            res = p.work_day.get_resolved_unit_prices()
+            u_price = res['photographer_unit_price'] if role == 'photographer' else res['clown_unit_price']
             earns = float(p.photo_count * u_price)
             if earns > best_earnings_val:
                 best_earnings_val = earns
@@ -407,7 +412,8 @@ class EmployeeDashboardService:
             employee=employee, work_day__date__gte=start_of_week, work_day__date__lte=today
         )
         for p in this_week_perfs:
-            u_price = p.work_day.photographer_unit_price if role == 'photographer' else p.work_day.clown_unit_price
+            res = p.work_day.get_resolved_unit_prices()
+            u_price = res['photographer_unit_price'] if role == 'photographer' else res['clown_unit_price']
             this_week_earnings += float(p.photo_count * u_price)
 
         last_week_earnings = 0.0
@@ -415,7 +421,8 @@ class EmployeeDashboardService:
             employee=employee, work_day__date__gte=start_of_last_week, work_day__date__lte=end_of_last_week
         )
         for p in last_week_perfs:
-            u_price = p.work_day.photographer_unit_price if role == 'photographer' else p.work_day.clown_unit_price
+            res = p.work_day.get_resolved_unit_prices()
+            u_price = res['photographer_unit_price'] if role == 'photographer' else res['clown_unit_price']
             last_week_earnings += float(p.photo_count * u_price)
 
         if last_week_earnings > 0:

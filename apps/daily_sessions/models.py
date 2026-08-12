@@ -47,12 +47,52 @@ class WorkDay(models.Model):
         max_length=15, choices=Status.choices, default=Status.DRAFT
     )
     photographer_unit_price = models.DecimalField(
-        max_digits=10, decimal_places=2, default=0,
-        help_text="Price per photo for photographers."
+        max_digits=10, decimal_places=2, default=45,
+        help_text="Price per photo for photographers (Normal price)."
     )
     clown_unit_price = models.DecimalField(
-        max_digits=10, decimal_places=2, default=0,
-        help_text="Price per photo for clowns."
+        max_digits=10, decimal_places=2, default=50,
+        help_text="Price per photo for clowns (Normal price)."
+    )
+    dynamic_pricing_enabled = models.BooleanField(
+        default=False,
+        help_text="Whether dynamic photo unit pricing is active for this WorkDay."
+    )
+    low_photo_threshold = models.PositiveIntegerField(
+        default=40,
+        help_text="Photo threshold for low volume pricing."
+    )
+    high_photo_threshold = models.PositiveIntegerField(
+        default=80,
+        help_text="Photo threshold for high volume pricing."
+    )
+    low_photographer_price = models.DecimalField(
+        max_digits=10, decimal_places=2, default=40,
+        help_text="Photographer unit price when total photos < low_photo_threshold."
+    )
+    low_clown_price = models.DecimalField(
+        max_digits=10, decimal_places=2, default=45,
+        help_text="Clown unit price when total photos < low_photo_threshold."
+    )
+    high_photographer_price = models.DecimalField(
+        max_digits=10, decimal_places=2, default=50,
+        help_text="Photographer unit price when total photos > high_photo_threshold."
+    )
+    high_clown_price = models.DecimalField(
+        max_digits=10, decimal_places=2, default=55,
+        help_text="Clown unit price when total photos > high_photo_threshold."
+    )
+    is_manually_overridden = models.BooleanField(
+        default=False,
+        help_text="Whether pricing has been manually overridden by admin."
+    )
+    override_photographer_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Manually overridden photographer unit price."
+    )
+    override_clown_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Manually overridden clown unit price."
     )
     notes = models.TextField(blank=True, null=True)
     created_by = models.ForeignKey(
@@ -81,6 +121,71 @@ class WorkDay(models.Model):
         if self.status in (self.Status.COMPLETED, self.Status.LOCKED) and not self.closed_at:
             from django.utils import timezone
             self.closed_at = timezone.now()
+
+        if self.low_photo_threshold >= self.high_photo_threshold:
+            raise ValidationError("low_photo_threshold must be strictly less than high_photo_threshold.")
+
+        for price_field in [
+            self.photographer_unit_price, self.clown_unit_price,
+            self.low_photographer_price, self.low_clown_price,
+            self.high_photographer_price, self.high_clown_price,
+        ]:
+            if price_field < 0:
+                raise ValidationError("Price values cannot be negative.")
+
+        if self.override_photographer_price is not None and self.override_photographer_price < 0:
+            raise ValidationError("Override price cannot be negative.")
+        if self.override_clown_price is not None and self.override_clown_price < 0:
+            raise ValidationError("Override price cannot be negative.")
+
+    def get_resolved_unit_prices(self, photo_count=None):
+        """
+        Calculates applicable unit prices based on dynamic pricing state, thresholds, and photo count.
+        Exact boundary rules:
+        - 0–39 photos (< low_photo_threshold 40): Low pricing
+        - 40–80 photos (low_photo_threshold 40 <= photos <= high_photo_threshold 80): Normal pricing
+        - 81+ photos (> high_photo_threshold 80): High pricing
+        """
+        if self.is_manually_overridden and self.override_photographer_price is not None and self.override_clown_price is not None:
+            return {
+                'photographer_unit_price': self.override_photographer_price,
+                'clown_unit_price': self.override_clown_price,
+                'tier': 'override',
+                'is_overridden': True,
+            }
+
+        if not self.dynamic_pricing_enabled:
+            return {
+                'photographer_unit_price': self.photographer_unit_price,
+                'clown_unit_price': self.clown_unit_price,
+                'tier': 'normal',
+                'is_overridden': False,
+            }
+
+        if photo_count is None:
+            photo_count = sum(t.team_photo_count for t in self.teams.all())
+
+        if photo_count < self.low_photo_threshold:
+            return {
+                'photographer_unit_price': self.low_photographer_price,
+                'clown_unit_price': self.low_clown_price,
+                'tier': 'low',
+                'is_overridden': False,
+            }
+        elif photo_count <= self.high_photo_threshold:
+            return {
+                'photographer_unit_price': self.photographer_unit_price,
+                'clown_unit_price': self.clown_unit_price,
+                'tier': 'normal',
+                'is_overridden': False,
+            }
+        else:
+            return {
+                'photographer_unit_price': self.high_photographer_price,
+                'clown_unit_price': self.high_clown_price,
+                'tier': 'high',
+                'is_overridden': False,
+            }
 
 
 class DailyTeam(models.Model):

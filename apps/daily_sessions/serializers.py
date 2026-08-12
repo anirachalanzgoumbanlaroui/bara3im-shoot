@@ -143,13 +143,18 @@ class WorkDaySerializer(serializers.ModelSerializer):
     teams = DailyTeamSerializer(many=True, read_only=True)
     seller_operations = SellerDailyOperationSerializer(many=True, read_only=True)
     created_by_name = serializers.SerializerMethodField()
+    pricing = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkDay
         fields = [
             'id', 'location', 'location_id', 'date', 'status',
             'photographer_unit_price', 'clown_unit_price',
-            'notes', 'created_by', 'created_by_name',
+            'dynamic_pricing_enabled', 'low_photo_threshold', 'high_photo_threshold',
+            'low_photographer_price', 'low_clown_price',
+            'high_photographer_price', 'high_clown_price',
+            'is_manually_overridden', 'override_photographer_price', 'override_clown_price',
+            'pricing', 'notes', 'created_by', 'created_by_name',
             'teams', 'seller_operations',
             'created_at', 'updated_at', 'closed_at'
         ]
@@ -158,6 +163,34 @@ class WorkDaySerializer(serializers.ModelSerializer):
 
     def get_created_by_name(self, obj):
         return obj.created_by.username if obj.created_by else None
+
+    def get_pricing(self, obj):
+        total_photos = sum(t.team_photo_count for t in obj.teams.all())
+        resolved = obj.get_resolved_unit_prices(photo_count=total_photos)
+        return {
+            'dynamic_enabled': obj.dynamic_pricing_enabled,
+            'is_manually_overridden': obj.is_manually_overridden,
+            'tier': resolved['tier'],
+            'total_photos': total_photos,
+            'photographer': {
+                'normal': float(obj.photographer_unit_price),
+                'low': float(obj.low_photographer_price),
+                'high': float(obj.high_photographer_price),
+                'override': float(obj.override_photographer_price) if obj.override_photographer_price is not None else None,
+                'current': float(resolved['photographer_unit_price']),
+            },
+            'clown': {
+                'normal': float(obj.clown_unit_price),
+                'low': float(obj.low_clown_price),
+                'high': float(obj.high_clown_price),
+                'override': float(obj.override_clown_price) if obj.override_clown_price is not None else None,
+                'current': float(resolved['clown_unit_price']),
+            },
+            'thresholds': {
+                'low': obj.low_photo_threshold,
+                'high': obj.high_photo_threshold,
+            }
+        }
 
     def validate_photographer_unit_price(self, value):
         if value < 0:
@@ -168,6 +201,13 @@ class WorkDaySerializer(serializers.ModelSerializer):
         if value < 0:
             raise serializers.ValidationError("Unit price cannot be negative.")
         return value
+
+    def validate(self, attrs):
+        low_t = attrs.get('low_photo_threshold', getattr(self.instance, 'low_photo_threshold', 40))
+        high_t = attrs.get('high_photo_threshold', getattr(self.instance, 'high_photo_threshold', 80))
+        if low_t is not None and high_t is not None and low_t >= high_t:
+            raise serializers.ValidationError({"low_photo_threshold": "low_photo_threshold must be strictly less than high_photo_threshold."})
+        return attrs
 
     def to_representation(self, instance):
         if hasattr(instance, '_prefetched_objects_cache'):

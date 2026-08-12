@@ -160,7 +160,8 @@ class StatisticsService:
         days_met_goal = 0
 
         for p in month_perf:
-            u_price = p.work_day.photographer_unit_price if role == 'photographer' else p.work_day.clown_unit_price
+            res = p.work_day.get_resolved_unit_prices()
+            u_price = res['photographer_unit_price'] if role == 'photographer' else res['clown_unit_price']
             earns = float(p.photo_count * u_price)
             month_earnings += earns
 
@@ -243,7 +244,8 @@ class StatisticsService:
         week_earnings = 0.0
         week_days_met_goal = 0
         for p in week_perf:
-            u_price = p.work_day.photographer_unit_price if role == 'photographer' else p.work_day.clown_unit_price
+            res = p.work_day.get_resolved_unit_prices()
+            u_price = res['photographer_unit_price'] if role == 'photographer' else res['clown_unit_price']
             week_earnings += float(p.photo_count * u_price)
             if p.photo_count >= 50:
                 week_days_met_goal += 1
@@ -295,7 +297,8 @@ class StatisticsService:
         best_day_earns_all = 0.0
         worst_day_earns_all = None
         for p in all_perf:
-            u_price = p.work_day.photographer_unit_price if role == 'photographer' else p.work_day.clown_unit_price
+            res = p.work_day.get_resolved_unit_prices()
+            u_price = res['photographer_unit_price'] if role == 'photographer' else res['clown_unit_price']
             earns = float(p.photo_count * u_price)
             all_earnings += earns
             if earns > best_day_earns_all:

@@ -9,10 +9,11 @@ class DailyOperationsService:
 
     @staticmethod
     def calculate_employee_earnings(performance: DailyEmployeePerformance) -> Decimal:
+        resolved = performance.work_day.get_resolved_unit_prices()
         if performance.employee.role == 'photographer':
-            unit_price = performance.work_day.photographer_unit_price
+            unit_price = resolved['photographer_unit_price']
         elif performance.employee.role == 'clown':
-            unit_price = performance.work_day.clown_unit_price
+            unit_price = resolved['clown_unit_price']
         else:
             unit_price = Decimal('0.00')
         return Decimal(performance.photo_count) * unit_price
@@ -25,6 +26,7 @@ class DailyOperationsService:
             user=user,
             details=details or {}
         )
+
 
     @staticmethod
     def generate_teams(work_day: WorkDay, user):
@@ -189,6 +191,7 @@ class DailyOperationsService:
         performances = work_day.performances.all()
 
         total_photos = sum(t.team_photo_count for t in teams)
+        resolved = work_day.get_resolved_unit_prices(photo_count=total_photos)
 
         photographer_earnings = Decimal('0.00')
         clown_earnings = Decimal('0.00')
@@ -208,8 +211,11 @@ class DailyOperationsService:
             "color_hex": work_day.location.color_hex,
             "date": str(work_day.date),
             "status": work_day.status,
-            "photographer_unit_price": float(work_day.photographer_unit_price),
-            "clown_unit_price": float(work_day.clown_unit_price),
+            "photographer_unit_price": float(resolved['photographer_unit_price']),
+            "clown_unit_price": float(resolved['clown_unit_price']),
+            "dynamic_pricing_enabled": work_day.dynamic_pricing_enabled,
+            "tier": resolved['tier'],
+            "is_overridden": resolved['is_overridden'],
             "teams_count": teams.count(),
             "sellers_count": seller_ops.count(),
             "total_photos": total_photos,

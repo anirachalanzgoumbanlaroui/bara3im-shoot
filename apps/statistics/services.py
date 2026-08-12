@@ -108,7 +108,8 @@ class StatisticsService:
         photo_rev = 0
         for wd in workdays_qs.prefetch_related('teams'):
             wd_photos = sum(t.team_photo_count for t in wd.teams.all())
-            unit_total = float(wd.photographer_unit_price + wd.clown_unit_price)
+            res = wd.get_resolved_unit_prices(photo_count=wd_photos)
+            unit_total = float(res['photographer_unit_price'] + res['clown_unit_price'])
             photo_rev += wd_photos * unit_total
 
         seller_rev = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
@@ -638,7 +639,8 @@ class StatisticsService:
         photo_revenue = 0
         for wd in workdays_qs.prefetch_related('teams'):
             wd_photos = sum(t.team_photo_count for t in wd.teams.all())
-            unit_total = float(wd.photographer_unit_price + wd.clown_unit_price)
+            res = wd.get_resolved_unit_prices(photo_count=wd_photos)
+            unit_total = float(res['photographer_unit_price'] + res['clown_unit_price'])
             photo_revenue += wd_photos * unit_total
 
         seller_revenue = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
@@ -658,7 +660,8 @@ class StatisticsService:
             l_photo_rev = 0
             for wd in l_workdays.prefetch_related('teams'):
                 w_pics = sum(t.team_photo_count for t in wd.teams.all())
-                l_photo_rev += w_pics * float(wd.photographer_unit_price + wd.clown_unit_price)
+                res = wd.get_resolved_unit_prices(photo_count=w_pics)
+                l_photo_rev += w_pics * float(res['photographer_unit_price'] + res['clown_unit_price'])
             l_seller_rev = float(l_sellers.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
             revenue_by_location.append({
                 'location_id': str(loc.id),
@@ -682,7 +685,8 @@ class StatisticsService:
             d_photo_rev = 0
             for wd in d_workdays.prefetch_related('teams'):
                 w_pics = sum(t.team_photo_count for t in wd.teams.all())
-                d_photo_rev += w_pics * float(wd.photographer_unit_price + wd.clown_unit_price)
+                res = wd.get_resolved_unit_prices(photo_count=w_pics)
+                d_photo_rev += w_pics * float(res['photographer_unit_price'] + res['clown_unit_price'])
             d_seller_rev = daily_sellers.get(curr_d, 0.0)
             d_total = d_photo_rev + d_seller_rev
 
@@ -742,7 +746,8 @@ class StatisticsService:
             photo_rev = 0
             for wd in workdays.prefetch_related('teams'):
                 w_pics = sum(t.team_photo_count for t in wd.teams.all())
-                photo_rev += w_pics * float(wd.photographer_unit_price + wd.clown_unit_price)
+                res = wd.get_resolved_unit_prices(photo_count=w_pics)
+                photo_rev += w_pics * float(res['photographer_unit_price'] + res['clown_unit_price'])
 
             seller_rev = float(sellers.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
             tot_rev = photo_rev + seller_rev
