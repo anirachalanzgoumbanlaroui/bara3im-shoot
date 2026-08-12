@@ -153,6 +153,7 @@ class WorkDaySerializer(serializers.ModelSerializer):
             'dynamic_pricing_enabled', 'low_photo_threshold', 'high_photo_threshold',
             'low_photographer_price', 'low_clown_price',
             'high_photographer_price', 'high_clown_price',
+            'low_tier_active', 'normal_tier_active', 'high_tier_active',
             'is_manually_overridden', 'override_photographer_price', 'override_clown_price',
             'pricing', 'notes', 'created_by', 'created_by_name',
             'teams', 'seller_operations',
@@ -172,6 +173,9 @@ class WorkDaySerializer(serializers.ModelSerializer):
             'is_manually_overridden': obj.is_manually_overridden,
             'tier': resolved['tier'],
             'total_photos': total_photos,
+            'low_tier_active': obj.low_tier_active,
+            'normal_tier_active': obj.normal_tier_active,
+            'high_tier_active': obj.high_tier_active,
             'photographer': {
                 'normal': float(obj.photographer_unit_price),
                 'low': float(obj.low_photographer_price),

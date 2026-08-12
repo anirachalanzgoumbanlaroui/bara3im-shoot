@@ -82,6 +82,9 @@ class WorkDayViewSet(viewsets.ModelViewSet):
                 'low_clown_price': '45.00',
                 'high_photographer_price': '50.00',
                 'high_clown_price': '55.00',
+                'low_tier_active': True,
+                'normal_tier_active': True,
+                'high_tier_active': True,
                 'is_manually_overridden': False,
                 'override_photographer_price': None,
                 'override_clown_price': None,
@@ -90,6 +93,9 @@ class WorkDayViewSet(viewsets.ModelViewSet):
                     'is_manually_overridden': False,
                     'tier': 'normal',
                     'total_photos': 0,
+                    'low_tier_active': True,
+                    'normal_tier_active': True,
+                    'high_tier_active': True,
                     'photographer': {
                         'normal': 45.0, 'low': 40.0, 'high': 50.0, 'override': None, 'current': 45.0
                     },
@@ -148,6 +154,9 @@ class WorkDayViewSet(viewsets.ModelViewSet):
             'low_clown_price': data.get('low_clown_price', 45),
             'high_photographer_price': data.get('high_photographer_price', 50),
             'high_clown_price': data.get('high_clown_price', 55),
+            'low_tier_active': data.get('low_tier_active', True),
+            'normal_tier_active': data.get('normal_tier_active', True),
+            'high_tier_active': data.get('high_tier_active', True),
             'is_manually_overridden': data.get('is_manually_overridden', False),
             'override_photographer_price': data.get('override_photographer_price'),
             'override_clown_price': data.get('override_clown_price'),
@@ -167,6 +176,7 @@ class WorkDayViewSet(viewsets.ModelViewSet):
                 'dynamic_pricing_enabled', 'low_photo_threshold', 'high_photo_threshold',
                 'low_photographer_price', 'low_clown_price',
                 'high_photographer_price', 'high_clown_price',
+                'low_tier_active', 'normal_tier_active', 'high_tier_active',
                 'is_manually_overridden', 'override_photographer_price', 'override_clown_price',
                 'notes', 'status'
             ]:

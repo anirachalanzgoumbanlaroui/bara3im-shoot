@@ -82,6 +82,18 @@ class WorkDay(models.Model):
         max_digits=10, decimal_places=2, default=55,
         help_text="Clown unit price when total photos > high_photo_threshold."
     )
+    low_tier_active = models.BooleanField(
+        default=True,
+        help_text="Whether low volume pricing tier is active."
+    )
+    normal_tier_active = models.BooleanField(
+        default=True,
+        help_text="Whether normal volume pricing tier is active."
+    )
+    high_tier_active = models.BooleanField(
+        default=True,
+        help_text="Whether high volume pricing tier is active."
+    )
     is_manually_overridden = models.BooleanField(
         default=False,
         help_text="Whether pricing has been manually overridden by admin."
@@ -140,11 +152,11 @@ class WorkDay(models.Model):
 
     def get_resolved_unit_prices(self, photo_count=None):
         """
-        Calculates applicable unit prices based on dynamic pricing state, thresholds, and photo count.
+        Calculates applicable unit prices based on dynamic pricing state, thresholds, photo count, and tier activation.
         Exact boundary rules:
-        - 0–39 photos (< low_photo_threshold 40): Low pricing
-        - 40–80 photos (low_photo_threshold 40 <= photos <= high_photo_threshold 80): Normal pricing
-        - 81+ photos (> high_photo_threshold 80): High pricing
+        - 0–39 photos (< low_photo_threshold 40): Low pricing (if active)
+        - 40–80 photos (low_photo_threshold 40 <= photos <= high_photo_threshold 80): Normal pricing (if active)
+        - 81+ photos (> high_photo_threshold 80): High pricing (if active)
         """
         if self.is_manually_overridden and self.override_photographer_price is not None and self.override_clown_price is not None:
             return {
@@ -165,25 +177,55 @@ class WorkDay(models.Model):
         if photo_count is None:
             photo_count = sum(t.team_photo_count for t in self.teams.all())
 
+        target_tier = 'normal'
         if photo_count < self.low_photo_threshold:
+            target_tier = 'low'
+        elif photo_count > self.high_photo_threshold:
+            target_tier = 'high'
+
+        # Check activation status with fallback
+        selected_tier = 'normal'
+        if target_tier == 'low':
+            if self.low_tier_active:
+                selected_tier = 'low'
+            elif self.normal_tier_active:
+                selected_tier = 'normal'
+            elif self.high_tier_active:
+                selected_tier = 'high'
+        elif target_tier == 'high':
+            if self.high_tier_active:
+                selected_tier = 'high'
+            elif self.normal_tier_active:
+                selected_tier = 'normal'
+            elif self.low_tier_active:
+                selected_tier = 'low'
+        else: # normal
+            if self.normal_tier_active:
+                selected_tier = 'normal'
+            elif self.low_tier_active:
+                selected_tier = 'low'
+            elif self.high_tier_active:
+                selected_tier = 'high'
+
+        if selected_tier == 'low':
             return {
                 'photographer_unit_price': self.low_photographer_price,
                 'clown_unit_price': self.low_clown_price,
                 'tier': 'low',
                 'is_overridden': False,
             }
-        elif photo_count <= self.high_photo_threshold:
-            return {
-                'photographer_unit_price': self.photographer_unit_price,
-                'clown_unit_price': self.clown_unit_price,
-                'tier': 'normal',
-                'is_overridden': False,
-            }
-        else:
+        elif selected_tier == 'high':
             return {
                 'photographer_unit_price': self.high_photographer_price,
                 'clown_unit_price': self.high_clown_price,
                 'tier': 'high',
+                'is_overridden': False,
+            }
+        else:
+            return {
+                'photographer_unit_price': self.photographer_unit_price,
+                'clown_unit_price': self.clown_unit_price,
+                'tier': 'normal',
                 'is_overridden': False,
             }
 
