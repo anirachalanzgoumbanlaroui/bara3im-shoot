@@ -77,7 +77,23 @@ class ChangePasswordView(APIView):
         user.set_password(serializer.validated_data['new_password'])
         user.save()
 
+        from django.utils import timezone
+        from apps.employees.models import Employee, PasswordChangeLog
+
+        try:
+            employee = user.employee_profile
+            employee.password_changed_at = timezone.now()
+            employee.save()
+        except (AttributeError, Employee.DoesNotExist):
+            pass
+
+        PasswordChangeLog.objects.create(
+            user=user,
+            changed_by=user,
+            action=PasswordChangeLog.Action.EMPLOYEE_CHANGED
+        )
+
         return Response(
-            {'detail': 'Password changed successfully.'},
+            {'message': 'Password changed successfully.'},
             status=status.HTTP_200_OK,
         )

@@ -1,35 +1,64 @@
 from rest_framework import serializers
-from .models import Employee
+from .models import Employee, PasswordChangeLog
 from apps.users.models import User
 import re
+
+
+class PasswordChangeLogSerializer(serializers.ModelSerializer):
+    changed_by_name = serializers.SerializerMethodField()
+
+    def get_changed_by_name(self, obj):
+        if obj.changed_by:
+            return f"{obj.changed_by.first_name} {obj.changed_by.last_name}".strip() or obj.changed_by.username
+        return "System"
+
+    class Meta:
+        model = PasswordChangeLog
+        fields = ['id', 'user', 'changed_by', 'changed_by_name', 'action', 'created_at']
+        read_only_fields = fields
+
 
 class EmployeeSerializer(serializers.ModelSerializer):
     """
     Serializer for the Employee model.
     Handles data validation and transformation for the API.
     """
-    username = serializers.CharField(write_only=True, required=False)
+    username = serializers.CharField(required=False, allow_blank=True)
     password = serializers.CharField(write_only=True, required=False)
     is_active = serializers.SerializerMethodField()
+    password_configured = serializers.SerializerMethodField()
 
     def get_is_active(self, obj):
         return getattr(obj, 'is_active', obj.status == 'active')
 
+    def get_password_configured(self, obj):
+        if hasattr(obj, 'user') and obj.user:
+            return obj.user.has_usable_password()
+        return False
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if hasattr(instance, 'user') and instance.user:
+            ret['username'] = instance.user.username
+        return ret
+
     class Meta:
         model = Employee
         fields = [
-            'id', 'user', 'employee_code', 'first_name', 'last_name',
+            'id', 'user', 'username', 'employee_code', 'first_name', 'last_name',
             'phone_number', 'address', 'date_of_birth', 'hiring_date',
             'role', 'status', 'is_active', 'avatar', 'notes',
             'fingerprint_registered', 'fingerprint_template_id', 'fingerprint_registered_at',
             'face_registered', 'face_registered_at', 'face_last_updated',
+            'password_configured', 'password_changed_at',
             'created_at', 'updated_at',
-            'username', 'password'
+            'password'
         ]
         read_only_fields = [
             'id', 'user', 'employee_code', 'fingerprint_registered',
             'fingerprint_template_id', 'fingerprint_registered_at',
             'face_registered', 'face_registered_at', 'face_last_updated',
+            'password_configured', 'password_changed_at',
             'created_at', 'updated_at'
         ]
 

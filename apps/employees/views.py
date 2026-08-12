@@ -12,8 +12,8 @@ from apps.attendance.models import AttendanceLog, AttendanceRecord
 from apps.attendance.services.fingerprint.service import fingerprint_service
 from apps.attendance.services.face.service import face_recognition_service
 
-from .models import Employee, Advance, Deduction, Bonus
-from .serializers import EmployeeSerializer, EmployeeListSerializer
+from .models import Employee, Advance, Deduction, Bonus, PasswordChangeLog
+from .serializers import EmployeeSerializer, EmployeeListSerializer, PasswordChangeLogSerializer
 
 
 class EmployeePagination(PageNumberPagination):
@@ -377,6 +377,45 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+    @action(detail=True, methods=['post'], url_path='reset-password', permission_classes=[permissions.IsAuthenticated])
+    def reset_password(self, request, pk=None):
+        """
+        Admin endpoint: Reset employee password.
+        POST /api/employees/{id}/reset-password/
+        """
+        if getattr(request.user, 'role', '') != 'admin':
+            return Response({'detail': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+        employee = self.get_object()
+        new_password = request.data.get('new_password')
+        confirm_password = request.data.get('confirm_password')
+
+        if not new_password:
+            return Response({'detail': 'New password is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if confirm_password is not None and new_password != confirm_password:
+            return Response({'detail': 'Passwords do not match.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.contrib.auth.password_validation import validate_password, ValidationError as DjangoValidationError
+        try:
+            validate_password(new_password, employee.user)
+        except DjangoValidationError as e:
+            return Response({'detail': ' '.join(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+        employee.user.set_password(new_password)
+        employee.user.save()
+
+        employee.password_changed_at = timezone.now()
+        employee.save()
+
+        PasswordChangeLog.objects.create(
+            user=employee.user,
+            changed_by=request.user,
+            action=PasswordChangeLog.Action.ADMIN_RESET
+        )
+
+        return Response({'message': 'Employee password has been reset successfully.'}, status=status.HTTP_200_OK)
+
     # ── Full employee detail with all history ──────────────────────────────────
 
     @action(detail=True, methods=['get'], url_path='full-detail')
@@ -393,6 +432,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         deductions = Deduction.objects.filter(employee=employee).order_by('-date', '-created_at')[:20]
         bonuses = Bonus.objects.filter(employee=employee).order_by('-date', '-created_at')[:20]
         activity_logs = AttendanceLog.objects.filter(employee=employee).order_by('-timestamp')[:20]
+        password_logs = PasswordChangeLog.objects.filter(user=employee.user).order_by('-created_at')[:20]
 
         from apps.attendance.serializers import AttendanceRecordSerializer, AttendanceLogSerializer
         from apps.statistics.services import StatisticsService
@@ -423,7 +463,53 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 'created_at': b.created_at.isoformat(),
             } for b in bonuses],
             'activity_logs': AttendanceLogSerializer(activity_logs, many=True).data,
+            'password_logs': PasswordChangeLogSerializer(password_logs, many=True).data,
         })
+
+
+class AdminResetPasswordView(APIView):
+    """
+    Admin endpoint for resetting employee password via /api/admin/employees/{employee_id}/reset-password/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, employee_id):
+        if getattr(request.user, 'role', '') != 'admin':
+            return Response({'detail': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            employee = Employee.objects.get(pk=employee_id)
+        except Employee.DoesNotExist:
+            return Response({'detail': 'Employee not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        new_password = request.data.get('new_password')
+        confirm_password = request.data.get('confirm_password')
+
+        if not new_password:
+            return Response({'detail': 'New password is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if confirm_password is not None and new_password != confirm_password:
+            return Response({'detail': 'Passwords do not match.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.contrib.auth.password_validation import validate_password, ValidationError as DjangoValidationError
+        try:
+            validate_password(new_password, employee.user)
+        except DjangoValidationError as e:
+            return Response({'detail': ' '.join(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+        employee.user.set_password(new_password)
+        employee.user.save()
+
+        employee.password_changed_at = timezone.now()
+        employee.save()
+
+        PasswordChangeLog.objects.create(
+            user=employee.user,
+            changed_by=request.user,
+            action=PasswordChangeLog.Action.ADMIN_RESET
+        )
+
+        return Response({'message': 'Employee password has been reset successfully.'}, status=status.HTTP_200_OK)
 
     # ── Admin: Apply Late Penalty to an Attendance Record ─────────────────────────
 

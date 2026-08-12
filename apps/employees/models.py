@@ -45,6 +45,7 @@ class Employee(models.Model):
     face_embedding = models.JSONField(blank=True, null=True)
     face_registered_at = models.DateTimeField(blank=True, null=True)
     face_last_updated = models.DateTimeField(blank=True, null=True)
+    password_changed_at = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -122,4 +123,23 @@ class Deduction(models.Model):
 
     def __str__(self):
         return f"Deduction: {self.amount} DA for {self.employee} on {self.date}"
+
+
+class PasswordChangeLog(models.Model):
+    class Action(models.TextChoices):
+        EMPLOYEE_CHANGED = 'employee_changed', 'Employee Changed'
+        ADMIN_RESET = 'admin_reset', 'Admin Reset'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='password_change_logs')
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='passwords_changed_by')
+    action = models.CharField(max_length=50, choices=Action.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Password log: {self.user.username} - {self.action} at {self.created_at}"
+
 

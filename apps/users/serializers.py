@@ -42,23 +42,36 @@ class LoginSerializer(serializers.Serializer):
 
 
 class ChangePasswordSerializer(serializers.Serializer):
-    """Validates password changes."""
+    """Validates employee password changes."""
 
-    old_password = serializers.CharField(write_only=True)
+    current_password = serializers.CharField(write_only=True, required=False)
+    old_password = serializers.CharField(write_only=True, required=False)
     new_password = serializers.CharField(write_only=True)
-
-    def validate_old_password(self, value):
-        user = self.context['request'].user
-        if not user.check_password(value):
-            raise serializers.ValidationError('Old password is incorrect.')
-        return value
+    confirm_password = serializers.CharField(write_only=True, required=False)
 
     def validate(self, attrs):
-        if attrs['old_password'] == attrs['new_password']:
-            raise serializers.ValidationError('New password must be different from the old password.')
-        
-        # Django password validation
-        from django.contrib.auth.password_validation import validate_password
         user = self.context['request'].user
-        validate_password(attrs['new_password'], user)
+        curr_pwd = attrs.get('current_password') or attrs.get('old_password')
+        
+        if not curr_pwd:
+            raise serializers.ValidationError({'detail': 'Current password is required.'})
+
+        if not user.check_password(curr_pwd):
+            raise serializers.ValidationError({'detail': 'Current password is incorrect.'})
+
+        new_pwd = attrs.get('new_password')
+        confirm_pwd = attrs.get('confirm_password')
+
+        if confirm_pwd is not None and new_pwd != confirm_pwd:
+            raise serializers.ValidationError({'detail': 'Passwords do not match.'})
+
+        if curr_pwd == new_pwd:
+            raise serializers.ValidationError({'detail': 'The new password must be different from the current password.'})
+
+        from django.contrib.auth.password_validation import validate_password, ValidationError as DjangoValidationError
+        try:
+            validate_password(new_pwd, user)
+        except DjangoValidationError as e:
+            raise serializers.ValidationError({'detail': ' '.join(e.messages)})
+
         return attrs
