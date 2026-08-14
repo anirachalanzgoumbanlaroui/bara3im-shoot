@@ -300,7 +300,7 @@ class StatisticsService:
         # Bulk fetch attendance
         att_map = {}
         for item in AttendanceRecord.objects.filter(
-            employee_id__in=emp_ids, date__range=(s_date, e_date)
+            employee_id__in=all_emp_ids, date__range=(s_date, e_date)
         ).values('employee_id').annotate(
             tot=Count('id'),
             pres=Count('id', filter=Q(status__in=['present', 'late']))
