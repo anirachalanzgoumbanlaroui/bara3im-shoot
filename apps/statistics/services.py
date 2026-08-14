@@ -16,6 +16,8 @@ CACHE_TIMEOUT = 3600  # 1 hour (invalidated on WorkDay change)
 
 
 class StatisticsService:
+    VALID_STATUSES = ['draft', 'in_progress', 'completed', 'locked']
+
 
     @staticmethod
     def get_date_range(time_filter='this_month', custom_start=None, custom_end=None):
@@ -93,19 +95,19 @@ class StatisticsService:
 
         workdays_qs = WorkDay.objects.filter(
             date__range=(s_date, e_date),
-            status__in=['in_progress', 'completed', 'locked']
+            status__in=cls.VALID_STATUSES
         )
         perfs_qs = DailyEmployeePerformance.objects.filter(
             work_day__date__range=(s_date, e_date),
-            work_day__status__in=['in_progress', 'completed', 'locked']
+            work_day__status__in=cls.VALID_STATUSES
         )
         sellers_qs = SellerDailyOperation.objects.filter(
             work_day__date__range=(s_date, e_date),
-            work_day__status__in=['in_progress', 'completed', 'locked']
+            work_day__status__in=cls.VALID_STATUSES
         )
         teams_qs = DailyTeam.objects.filter(
             work_day__date__range=(s_date, e_date),
-            work_day__status__in=['in_progress', 'completed', 'locked']
+            work_day__status__in=cls.VALID_STATUSES
         )
         attendance_qs = AttendanceRecord.objects.filter(date__range=(s_date, e_date))
 
@@ -239,7 +241,7 @@ class StatisticsService:
         perfs = DailyEmployeePerformance.objects.filter(
             employee__role=role,
             work_day__date__range=(s_date, e_date),
-            work_day__status__in=['in_progress', 'completed', 'locked']
+            work_day__status__in=cls.VALID_STATUSES
         ).select_related('employee', 'work_day')
 
         if location_id:
@@ -252,16 +254,47 @@ class StatisticsService:
             cnt=Count('work_day', distinct=True),
             mx=Coalesce(Max('photo_count'), 0)
         ):
+            perf_map[str(item['employee_id'])] = item
             perf_map[item['employee_id']] = item
 
-        if not perf_map:
-            emp_ids = list(Employee.objects.filter(role=role, status='active').values_list('id', flat=True))
-        else:
-            emp_ids = list(perf_map.keys())
+        # Fallback to DailyTeam aggregation for role
+        team_role_filter = Q(work_day__date__range=(s_date, e_date), work_day__status__in=cls.VALID_STATUSES)
+        if location_id:
+            team_role_filter &= Q(work_day__location_id=location_id)
 
-        # Bulk fetch employee instances (including historical ones with performance records)
+        if role == 'photographer':
+            teams_agg = DailyTeam.objects.filter(team_role_filter).values('photographer_id').annotate(
+                tot_pics=Coalesce(Sum('team_photo_count'), 0),
+                cnt=Count('work_day', distinct=True),
+                mx=Coalesce(Max('team_photo_count'), 0)
+            )
+            for item in teams_agg:
+                emp_id_str = str(item['photographer_id'])
+                emp_id_raw = item['photographer_id']
+                existing = perf_map.get(emp_id_str) or perf_map.get(emp_id_raw)
+                if not existing or existing.get('tot_pics', 0) == 0:
+                    perf_map[emp_id_str] = item
+                    perf_map[emp_id_raw] = item
+        elif role == 'clown':
+            teams_agg = DailyTeam.objects.filter(team_role_filter).values('clown_id').annotate(
+                tot_pics=Coalesce(Sum('team_photo_count'), 0),
+                cnt=Count('work_day', distinct=True),
+                mx=Coalesce(Max('team_photo_count'), 0)
+            )
+            for item in teams_agg:
+                emp_id_str = str(item['clown_id'])
+                emp_id_raw = item['clown_id']
+                existing = perf_map.get(emp_id_str) or perf_map.get(emp_id_raw)
+                if not existing or existing.get('tot_pics', 0) == 0:
+                    perf_map[emp_id_str] = item
+                    perf_map[emp_id_raw] = item
+
+        all_role_emp_ids = list(Employee.objects.filter(role=role, status='active').values_list('id', flat=True))
+        all_emp_ids = list(set([str(k) for k in perf_map.keys()] + [str(e) for e in all_role_emp_ids]))
+
+        # Bulk fetch employee instances
         emp_dict = {
-            str(emp.id): emp for emp in Employee.objects.filter(id__in=emp_ids)
+            str(emp.id): emp for emp in Employee.objects.filter(id__in=all_emp_ids, role=role)
         }
 
         # Bulk fetch attendance
@@ -408,7 +441,7 @@ class StatisticsService:
 
         seller_ops = SellerDailyOperation.objects.filter(
             work_day__date__range=(s_date, e_date),
-            work_day__status__in=['in_progress', 'completed', 'locked']
+            work_day__status__in=cls.VALID_STATUSES
         ).select_related('seller', 'work_day')
 
         if location_id:
@@ -545,7 +578,7 @@ class StatisticsService:
 
         teams_qs = DailyTeam.objects.filter(
             work_day__date__range=(s_date, e_date),
-            work_day__status__in=['in_progress', 'completed', 'locked']
+            work_day__status__in=cls.VALID_STATUSES
         ).select_related('photographer', 'clown', 'work_day')
 
         if location_id:
@@ -758,11 +791,11 @@ class StatisticsService:
 
         workdays_qs = WorkDay.objects.filter(
             date__range=(s_date, e_date),
-            status__in=['in_progress', 'completed', 'locked']
+            status__in=cls.VALID_STATUSES
         )
         sellers_qs = SellerDailyOperation.objects.filter(
             work_day__date__range=(s_date, e_date),
-            work_day__status__in=['in_progress', 'completed', 'locked']
+            work_day__status__in=cls.VALID_STATUSES
         )
         bonuses_qs = Bonus.objects.filter(date__range=(s_date, e_date))
         deductions_qs = Deduction.objects.filter(date__range=(s_date, e_date))
@@ -880,9 +913,9 @@ class StatisticsService:
         comparison_list = []
 
         for loc in locations:
-            workdays = WorkDay.objects.filter(location=loc, date__range=(s_date, e_date), status__in=['in_progress', 'completed', 'locked'])
-            teams = DailyTeam.objects.filter(work_day__location=loc, work_day__date__range=(s_date, e_date), work_day__status__in=['in_progress', 'completed', 'locked'])
-            sellers = SellerDailyOperation.objects.filter(work_day__location=loc, work_day__date__range=(s_date, e_date), work_day__status__in=['in_progress', 'completed', 'locked'])
+            workdays = WorkDay.objects.filter(location=loc, date__range=(s_date, e_date), status__in=cls.VALID_STATUSES)
+            teams = DailyTeam.objects.filter(work_day__location=loc, work_day__date__range=(s_date, e_date), work_day__status__in=cls.VALID_STATUSES)
+            sellers = SellerDailyOperation.objects.filter(work_day__location=loc, work_day__date__range=(s_date, e_date), work_day__status__in=cls.VALID_STATUSES)
 
             pics = teams.aggregate(total=Coalesce(Sum('team_photo_count'), 0))['total']
             
@@ -1235,11 +1268,11 @@ class StatisticsService:
 
         perfs_qs = DailyEmployeePerformance.objects.filter(
             work_day__date__range=(s_date, e_date),
-            work_day__status__in=['in_progress', 'completed', 'locked']
+            work_day__status__in=cls.VALID_STATUSES
         )
         seller_qs = SellerDailyOperation.objects.filter(
             work_day__date__range=(s_date, e_date),
-            work_day__status__in=['in_progress', 'completed', 'locked']
+            work_day__status__in=cls.VALID_STATUSES
         )
 
         if location_id:
@@ -1380,8 +1413,8 @@ class StatisticsService:
 
         s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
 
-        perfs = DailyEmployeePerformance.objects.filter(employee=employee, work_day__date__range=(s_date, e_date), work_day__status__in=['in_progress', 'completed', 'locked'])
-        seller_ops = SellerDailyOperation.objects.filter(seller=employee, work_day__date__range=(s_date, e_date), work_day__status__in=['in_progress', 'completed', 'locked'])
+        perfs = DailyEmployeePerformance.objects.filter(employee=employee, work_day__date__range=(s_date, e_date), work_day__status__in=cls.VALID_STATUSES)
+        seller_ops = SellerDailyOperation.objects.filter(seller=employee, work_day__date__range=(s_date, e_date), work_day__status__in=cls.VALID_STATUSES)
         att_recs = AttendanceRecord.objects.filter(employee=employee, date__range=(s_date, e_date))
 
         tot_pics = perfs.aggregate(total=Coalesce(Sum('photo_count'), 0))['total']

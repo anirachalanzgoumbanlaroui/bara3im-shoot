@@ -267,6 +267,29 @@ class DailyTeam(models.Model):
         name = self.team_name or f"{self.photographer.first_name} & {self.clown.first_name}"
         return f"{name} @ {self.work_day}"
 
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        try:
+            from apps.daily_sessions.models import DailyEmployeePerformance
+            for emp in [self.photographer, self.clown]:
+                if emp:
+                    perf, created = DailyEmployeePerformance.objects.get_or_create(
+                        work_day=self.work_day,
+                        employee=emp,
+                        defaults={
+                            'team': self,
+                            'photo_count': self.team_photo_count,
+                            'adjustment_type': DailyEmployeePerformance.AdjustmentType.AUTOMATIC,
+                        }
+                    )
+                    if not created and perf.adjustment_type == DailyEmployeePerformance.AdjustmentType.AUTOMATIC:
+                        if perf.photo_count != self.team_photo_count or perf.team_id != self.id:
+                            perf.photo_count = self.team_photo_count
+                            perf.team = self
+                            perf.save(update_fields=['photo_count', 'team', 'updated_at'])
+        except Exception:
+            pass
+
     def clean(self):
         if self.photographer.role != 'photographer':
             raise ValidationError("Photographer must have the role 'photographer'.")
