@@ -1,4 +1,5 @@
 import logging
+import math
 from datetime import datetime, timedelta, date
 from django.utils import timezone
 from django.db.models import Sum, Avg, Count, Max, Min, F, Q, FloatField, ExpressionWrapper
@@ -57,6 +58,8 @@ class StatisticsService:
             start = today.replace(month=1, day=1)
             end = today.replace(month=12, day=31)
             return start, end
+        elif time_filter == 'all_time':
+            return date(2020, 1, 1), today
         elif time_filter == 'custom':
             try:
                 s = datetime.strptime(custom_start, '%Y-%m-%d').date() if isinstance(custom_start, str) else custom_start
@@ -370,7 +373,8 @@ class StatisticsService:
         for idx, item in enumerate(leaderboard_data):
             item['rank'] = idx + 1
             if idx == 0:
-                item['badge_name'] = 'NADJIB' if time_filter == 'overall' else ('TARGI' if role == 'clown' else 'KING')
+                # Rank 1 is always NADJIB theme (gold) regardless of role or period
+                item['badge_name'] = 'NADJIB'
                 item['badge'] = '🏆'
             elif idx == 1:
                 item['badge_name'] = 'TARGI'
@@ -1402,7 +1406,372 @@ class StatisticsService:
         return None
 
     # --------------------------------------------------------------------------
-    # EMPLOYEE PROFILE STATISTICS
+    # CONSISTENCY HELPER
+    # --------------------------------------------------------------------------
+    @staticmethod
+    def _calculate_consistency(daily_values):
+        """
+        Calculates a consistency score (0–100) from a list of daily numeric values.
+        Uses coefficient of variation (std_dev / mean). Lower CV = higher score.
+        """
+        if not daily_values:
+            return {'consistency_score': 0.0, 'consistency_label': 'No Data', 'std_deviation': 0.0}
+        if len(daily_values) == 1:
+            return {'consistency_score': 100.0, 'consistency_label': 'Excellent', 'std_deviation': 0.0}
+
+        mean = sum(daily_values) / len(daily_values)
+        if mean == 0:
+            return {'consistency_score': 0.0, 'consistency_label': 'No Activity', 'std_deviation': 0.0}
+
+        variance = sum((x - mean) ** 2 for x in daily_values) / len(daily_values)
+        std_dev = math.sqrt(variance)
+        cv = std_dev / mean
+        score = round(max(0.0, min(100.0, (1.0 - min(1.0, cv)) * 100)), 1)
+
+        if score >= 85:
+            label = 'Excellent'
+        elif score >= 70:
+            label = 'Good'
+        elif score >= 55:
+            label = 'Fair'
+        else:
+            label = 'Variable'
+
+        return {
+            'consistency_score': score,
+            'consistency_label': label,
+            'std_deviation': round(std_dev, 1),
+        }
+
+    # --------------------------------------------------------------------------
+    # EMPLOYEE ANALYTICS (Full — 8 Graphs)
+    # --------------------------------------------------------------------------
+    @classmethod
+    def get_employee_analytics(cls, employee_id, time_filter='this_month', location_id=None, start_date=None, end_date=None):
+        """
+        Comprehensive employee analytics profile powering all 8 graph types.
+        Returns a single aggregated payload — no N+1 queries.
+        Supports photographers, clowns, and sellers.
+        """
+        try:
+            employee = Employee.objects.get(id=employee_id)
+        except Employee.DoesNotExist:
+            return {'error': 'Employee not found'}
+
+        cache_key = f"stats_emp_analytics_{employee_id}_{time_filter}_{location_id}_{start_date}_{end_date}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
+        period_days = max(1, (e_date - s_date).days + 1)
+        is_seller = employee.role == 'seller'
+
+        emp_info = {
+            'id': str(employee.id),
+            'name': f"{employee.first_name} {employee.last_name}",
+            'role': employee.role,
+            'employee_code': employee.employee_code,
+            'avatar': employee.avatar.url if employee.avatar else None,
+            'hiring_date': employee.hiring_date.strftime('%Y-%m-%d') if employee.hiring_date else None,
+        }
+
+        # ── SELLER PATH ───────────────────────────────────────────────────────
+        if is_seller:
+            ops_qs = SellerDailyOperation.objects.filter(
+                seller=employee,
+                work_day__date__range=(s_date, e_date),
+                work_day__status__in=cls.VALID_STATUSES,
+            ).select_related('work_day', 'work_day__location')
+            if location_id:
+                ops_qs = ops_qs.filter(work_day__location_id=location_id)
+
+            agg = ops_qs.aggregate(
+                total=Coalesce(Sum('amount'), 0, output_field=FloatField()),
+                mx=Coalesce(Max('amount'), 0, output_field=FloatField()),
+                mn=Coalesce(Min('amount'), 0, output_field=FloatField()),
+                cnt=Count('id'),
+            )
+            days_worked = agg['cnt']
+            total_rev = float(agg['total'])
+            avg_per_day = round(total_rev / max(1, days_worked), 2) if days_worked > 0 else 0.0
+
+            timeline = [
+                {'date': item['work_day__date'].strftime('%Y-%m-%d'), 'photos': round(float(item['day_total']), 2)}
+                for item in ops_qs.values('work_day__date').annotate(
+                    day_total=Coalesce(Sum('amount'), 0, output_field=FloatField())
+                ).order_by('work_day__date')
+            ]
+
+            consistency_data = cls._calculate_consistency([t['photos'] for t in timeline])
+
+            loc_data = [
+                {
+                    'location_id': str(item['work_day__location__id']),
+                    'location_name': item['work_day__location__name'] or '',
+                    'location_color': item['work_day__location__color_hex'] or '#3B82F6',
+                    'days': item['days'],
+                    'total_photos': round(float(item['total']), 2),
+                    'average_per_day': round(float(item['avg'] or 0), 2),
+                    'best_day': round(float(item['best'] or 0), 2),
+                }
+                for item in ops_qs.values(
+                    'work_day__location__id', 'work_day__location__name', 'work_day__location__color_hex'
+                ).annotate(
+                    days=Count('work_day', distinct=True),
+                    total=Coalesce(Sum('amount'), 0, output_field=FloatField()),
+                    avg=Avg('amount'),
+                    best=Max('amount'),
+                )
+            ]
+
+            # Company comparison for sellers
+            company_qs = SellerDailyOperation.objects.filter(
+                work_day__date__range=(s_date, e_date),
+                work_day__status__in=cls.VALID_STATUSES,
+            )
+            if location_id:
+                company_qs = company_qs.filter(work_day__location_id=location_id)
+            role_avgs = [
+                float(item['avg'] or 0)
+                for item in company_qs.values('seller_id').annotate(avg=Avg('amount'))
+                if item['avg'] is not None
+            ]
+            company_avg = round(sum(role_avgs) / max(1, len(role_avgs)), 2) if role_avgs else 0.0
+            diff = round(avg_per_day - company_avg, 2)
+            diff_pct = round((diff / max(0.01, company_avg)) * 100, 1) if company_avg > 0 else 0.0
+            rank_avgs_sorted = sorted(role_avgs, reverse=True)
+            rank_in_role = next((i + 1 for i, v in enumerate(rank_avgs_sorted) if v <= avg_per_day + 0.01), len(rank_avgs_sorted))
+
+            # Trend: previous same-length period
+            prev_end = s_date - timedelta(days=1)
+            prev_start = prev_end - timedelta(days=period_days - 1)
+            prev_agg = SellerDailyOperation.objects.filter(
+                seller=employee,
+                work_day__date__range=(prev_start, prev_end),
+                work_day__status__in=cls.VALID_STATUSES,
+            ).aggregate(
+                total=Coalesce(Sum('amount'), 0, output_field=FloatField()),
+                cnt=Count('id'),
+            )
+            prev_days_cnt = prev_agg['cnt']
+            prev_avg = round(float(prev_agg['total']) / max(1, prev_days_cnt), 2) if prev_days_cnt > 0 else 0.0
+            growth_pct = round(((avg_per_day - prev_avg) / max(0.01, prev_avg)) * 100, 1) if prev_avg > 0 else 0.0
+
+            result = {
+                'employee': emp_info,
+                'summary': {
+                    'total_photos': total_rev,
+                    'days_worked': days_worked,
+                    'average_per_day': avg_per_day,
+                    'best_day': float(agg['mx']),
+                    'worst_day': float(agg['mn']),
+                    **consistency_data,
+                },
+                'timeline': timeline,
+                'partners': [],
+                'locations': loc_data,
+                'comparison': {
+                    'employee_average': avg_per_day,
+                    'company_average': company_avg,
+                    'difference': diff,
+                    'difference_percent': diff_pct,
+                    'rank_in_role': rank_in_role,
+                    'total_in_role': len(role_avgs),
+                },
+                'trend': {
+                    'current_average': avg_per_day,
+                    'previous_average': prev_avg,
+                    'growth_percent': growth_pct,
+                },
+                'period': {
+                    'start': s_date.strftime('%Y-%m-%d'),
+                    'end': e_date.strftime('%Y-%m-%d'),
+                    'time_filter': time_filter,
+                },
+            }
+
+        # ── PHOTOGRAPHER / CLOWN PATH ─────────────────────────────────────────
+        else:
+            perfs_qs = DailyEmployeePerformance.objects.filter(
+                employee=employee,
+                work_day__date__range=(s_date, e_date),
+                work_day__status__in=cls.VALID_STATUSES,
+            ).select_related('work_day', 'work_day__location')
+            if location_id:
+                perfs_qs = perfs_qs.filter(work_day__location_id=location_id)
+
+            # Summary — single aggregation
+            agg = perfs_qs.aggregate(
+                total=Coalesce(Sum('photo_count'), 0),
+                mx=Coalesce(Max('photo_count'), 0),
+                mn=Coalesce(Min('photo_count'), 0),
+                cnt=Count('id'),
+            )
+            total_photos = agg['total']
+            days_worked = agg['cnt']
+            best_day_count = agg['mx']
+            worst_day_count = agg['mn']
+            avg_per_day = round(total_photos / max(1, days_worked), 1) if days_worked > 0 else 0.0
+
+            # Timeline — single DB query
+            timeline = [
+                {'date': item['work_day__date'].strftime('%Y-%m-%d'), 'photos': item['photos']}
+                for item in perfs_qs.values('work_day__date').annotate(
+                    photos=Coalesce(Sum('photo_count'), 0)
+                ).order_by('work_day__date')
+            ]
+
+            consistency_data = cls._calculate_consistency([t['photos'] for t in timeline])
+
+            # Partners — single annotated query per role
+            partners = []
+            if employee.role == 'photographer':
+                team_filter = Q(
+                    photographer=employee,
+                    work_day__date__range=(s_date, e_date),
+                    work_day__status__in=cls.VALID_STATUSES,
+                )
+                partner_key = 'clown_id'
+            else:  # clown
+                team_filter = Q(
+                    clown=employee,
+                    work_day__date__range=(s_date, e_date),
+                    work_day__status__in=cls.VALID_STATUSES,
+                )
+                partner_key = 'photographer_id'
+
+            if location_id:
+                team_filter &= Q(work_day__location_id=location_id)
+
+            partner_qs = DailyTeam.objects.filter(team_filter).values(partner_key).annotate(
+                days_together=Count('id'),
+                total_photos=Coalesce(Sum('team_photo_count'), 0),
+                avg_photos=Avg('team_photo_count'),
+                best_day_val=Coalesce(Max('team_photo_count'), 0),
+                worst_day_val=Coalesce(Min('team_photo_count'), 0),
+            ).order_by('-total_photos')
+
+            partner_ids = [item[partner_key] for item in partner_qs]
+            partner_emp_dict = {emp.id: emp for emp in Employee.objects.filter(id__in=partner_ids)}
+
+            for item in partner_qs:
+                p_emp = partner_emp_dict.get(item[partner_key])
+                if not p_emp:
+                    continue
+                partners.append({
+                    'employee_id': str(p_emp.id),
+                    'name': f"{p_emp.first_name} {p_emp.last_name}",
+                    'role': p_emp.role,
+                    'avatar': p_emp.avatar.url if p_emp.avatar else None,
+                    'days_together': item['days_together'],
+                    'total_photos': item['total_photos'],
+                    'average_photos': round(float(item['avg_photos'] or 0), 1),
+                    'best_day': item['best_day_val'],
+                    'worst_day': item['worst_day_val'],
+                    'percentage': round((item['days_together'] / max(1, days_worked)) * 100, 1),
+                })
+
+            # Location breakdown — single annotated query
+            locations = [
+                {
+                    'location_id': str(item['work_day__location__id']),
+                    'location_name': item['work_day__location__name'] or '',
+                    'location_color': item['work_day__location__color_hex'] or '#3B82F6',
+                    'days': item['days'],
+                    'total_photos': item['total_photos'],
+                    'average_per_day': round(float(item['avg_photos'] or 0), 1),
+                    'best_day': item['best_day_val'],
+                }
+                for item in perfs_qs.values(
+                    'work_day__location__id', 'work_day__location__name', 'work_day__location__color_hex'
+                ).annotate(
+                    days=Count('id'),
+                    total_photos=Coalesce(Sum('photo_count'), 0),
+                    avg_photos=Avg('photo_count'),
+                    best_day_val=Coalesce(Max('photo_count'), 0),
+                ).order_by('-total_photos')
+            ]
+
+            # Company average — aggregate all same-role employees
+            company_perfs_qs = DailyEmployeePerformance.objects.filter(
+                employee__role=employee.role,
+                work_day__date__range=(s_date, e_date),
+                work_day__status__in=cls.VALID_STATUSES,
+            )
+            if location_id:
+                company_perfs_qs = company_perfs_qs.filter(work_day__location_id=location_id)
+
+            role_avgs = [
+                float(item['avg_photos'] or 0)
+                for item in company_perfs_qs.values('employee_id').annotate(avg_photos=Avg('photo_count'))
+                if item['avg_photos'] is not None
+            ]
+            company_avg = round(sum(role_avgs) / max(1, len(role_avgs)), 1) if role_avgs else 0.0
+            diff = round(avg_per_day - company_avg, 1)
+            diff_pct = round((diff / max(0.1, company_avg)) * 100, 1) if company_avg > 0 else 0.0
+            role_avgs_desc = sorted(role_avgs, reverse=True)
+            rank_in_role = next((i + 1 for i, v in enumerate(role_avgs_desc) if v <= avg_per_day + 0.05), len(role_avgs_desc))
+
+            # Performance trend: same-length preceding period
+            prev_end = s_date - timedelta(days=1)
+            prev_start = prev_end - timedelta(days=period_days - 1)
+            prev_qs = DailyEmployeePerformance.objects.filter(
+                employee=employee,
+                work_day__date__range=(prev_start, prev_end),
+                work_day__status__in=cls.VALID_STATUSES,
+            )
+            if location_id:
+                prev_qs = prev_qs.filter(work_day__location_id=location_id)
+            prev_agg = prev_qs.aggregate(
+                total=Coalesce(Sum('photo_count'), 0),
+                cnt=Count('id'),
+            )
+            prev_days_cnt = prev_agg['cnt']
+            prev_avg = round(prev_agg['total'] / max(1, prev_days_cnt), 1) if prev_days_cnt > 0 else 0.0
+            growth_pct = round(((avg_per_day - prev_avg) / max(0.1, prev_avg)) * 100, 1) if prev_avg > 0 else 0.0
+
+            result = {
+                'employee': emp_info,
+                'summary': {
+                    'total_photos': total_photos,
+                    'days_worked': days_worked,
+                    'average_per_day': avg_per_day,
+                    'best_day': best_day_count,
+                    'worst_day': worst_day_count,
+                    **consistency_data,
+                },
+                'timeline': timeline,
+                'partners': partners,
+                'locations': locations,
+                'comparison': {
+                    'employee_average': avg_per_day,
+                    'company_average': company_avg,
+                    'difference': diff,
+                    'difference_percent': diff_pct,
+                    'rank_in_role': rank_in_role,
+                    'total_in_role': len(role_avgs),
+                },
+                'trend': {
+                    'current_average': avg_per_day,
+                    'previous_average': prev_avg,
+                    'growth_percent': growth_pct,
+                },
+                'period': {
+                    'start': s_date.strftime('%Y-%m-%d'),
+                    'end': e_date.strftime('%Y-%m-%d'),
+                    'time_filter': time_filter,
+                },
+            }
+
+        try:
+            cache.set(cache_key, result, CACHE_TIMEOUT)
+        except Exception:
+            pass
+        return result
+
+    # --------------------------------------------------------------------------
+    # EMPLOYEE PROFILE STATISTICS (legacy — basic, kept for compatibility)
     # --------------------------------------------------------------------------
     @classmethod
     def get_employee_profile_stats(cls, employee_id, time_filter='this_year', start_date=None, end_date=None):
