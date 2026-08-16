@@ -22,7 +22,7 @@ class DailyEmployeePerformanceSerializer(serializers.ModelSerializer):
             'photo_count', 'adjustment_type', 'adjustment_reason', 'daily_earnings',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'daily_earnings', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'employee', 'work_day', 'team', 'daily_earnings', 'created_at', 'updated_at']
 
     def get_employee_name(self, obj):
         return f"{obj.employee.first_name} {obj.employee.last_name}"
