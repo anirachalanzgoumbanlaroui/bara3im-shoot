@@ -516,6 +516,36 @@ class EmployeeDashboardService:
             seller=employee
         ).aggregate(total=Sum('amount'))['total'] or 0.0)
 
+        # 1. Today's Attendance & Deductions
+        today_att = AttendanceRecord.objects.filter(employee=employee, date=today).first()
+        attendance_data = {
+            'status': today_att.status if today_att else 'No Attendance Recorded',
+            'check_in_time': today_att.check_in_time.isoformat() if today_att else None,
+            'minutes_late': today_att.minutes_late if today_att else 0,
+        }
+
+        late_records_count = AttendanceRecord.objects.filter(employee=employee, status='late').count()
+        active_rule = AttendanceRule.get_active_rule()
+        late_deduction_amount = float(active_rule.late_deduction_amount) if active_rule else 0.0
+        late_penalties = float(late_records_count * late_deduction_amount)
+
+        bonuses = float(Bonus.objects.filter(employee=employee).aggregate(total=Sum('amount'))['total'] or 0.0)
+        advances = float(Advance.objects.filter(employee=employee).aggregate(total=Sum('amount'))['total'] or 0.0)
+        deductions = float(Deduction.objects.filter(employee=employee).aggregate(total=Sum('amount'))['total'] or 0.0)
+
+        gross_earnings = lifetime_earnings
+        net_balance = gross_earnings + bonuses - late_penalties - advances - deductions
+
+        financial_summary = {
+            'gross_earnings': gross_earnings,
+            'late_penalties': late_penalties,
+            'bonuses': bonuses,
+            'advances': advances,
+            'deductions': deductions,
+            'net_balance': net_balance,
+        }
+
+        # 2. Streaks Calculations
         current_streak = 0
         longest_streak = 0
         temp_streak = 0
@@ -542,9 +572,11 @@ class EmployeeDashboardService:
         ).aggregate(max_val=Max('amount'))['max_val'] or 0.0)
 
         total_working_days = len(ops)
+        avg_daily_sales = lifetime_earnings / max(1, total_working_days)
 
+        # 3. History list
         history_list = []
-        for op in reversed(ops[-10:]):
+        for op in reversed(ops[-15:]):
             history_list.append({
                 'id': str(op.id),
                 'date': op.work_day.date.isoformat(),
@@ -552,6 +584,15 @@ class EmployeeDashboardService:
                 'notes': op.notes or ''
             })
 
+        # 4. Trend timeline points for graphs
+        trend_timeline = []
+        for op in ops[-14:]:
+            trend_timeline.append({
+                'date': op.work_day.date.isoformat(),
+                'amount': float(op.amount)
+            })
+
+        # 5. Achievements
         achievements = [
             {
                 'id': 'first_sale',
@@ -600,6 +641,7 @@ class EmployeeDashboardService:
             'longest_streak': longest_streak,
             'total_working_days': total_working_days,
             'lifetime_earnings': lifetime_earnings,
+            'avg_daily_sales': avg_daily_sales,
             'favorite_quote': 'Consistency beats motivation.'
         }
 
@@ -638,6 +680,9 @@ class EmployeeDashboardService:
             'current_streak': current_streak,
             'longest_streak': longest_streak,
             'history': history_list,
+            'trend_timeline': trend_timeline,
+            'financial_summary': financial_summary,
+            'attendance': attendance_data,
             'achievements': achievements,
             'hall_of_closers': hall_of_closers,
             'motivational_message': motivational_message,
