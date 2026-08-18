@@ -383,9 +383,41 @@ class DailyOperationLog(models.Model):
 
 class SellerDailyOperation(models.Model):
     """
-    Seller's daily earnings for a specific WorkDay.
+    Seller's daily earnings and manual performance rating for a specific WorkDay.
     Each seller has ONE record per WorkDay.
     """
+    class RatingChoices(models.TextChoices):
+        A_PLUS_PLUS = 'A++', 'A++'
+        A_PLUS = 'A+', 'A+'
+        A = 'A', 'A'
+        B = 'B', 'B'
+        C = 'C', 'C'
+        D = 'D', 'D'
+        E = 'E', 'E'
+        F = 'F', 'F'
+
+    RATING_SCORE_MAP = {
+        'A++': 8,
+        'A+': 7,
+        'A': 6,
+        'B': 5,
+        'C': 4,
+        'D': 3,
+        'E': 2,
+        'F': 1,
+    }
+
+    SCORE_RATING_MAP = {
+        8: 'A++',
+        7: 'A+',
+        6: 'A',
+        5: 'B',
+        4: 'C',
+        3: 'D',
+        2: 'E',
+        1: 'F',
+    }
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     seller = models.ForeignKey(
         'employees.Employee',
@@ -397,6 +429,13 @@ class SellerDailyOperation(models.Model):
         WorkDay, on_delete=models.CASCADE, related_name='seller_operations'
     )
     amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    rating = models.CharField(
+        max_length=5,
+        choices=RatingChoices.choices,
+        null=True,
+        blank=True,
+        help_text="Manual daily seller performance rating (A++ to F)."
+    )
     notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -406,8 +445,22 @@ class SellerDailyOperation(models.Model):
         unique_together = [('work_day', 'seller')]
 
     def __str__(self):
-        return f"{self.seller.first_name} @ {self.work_day}: {self.amount} DA"
+        rating_str = f" [{self.rating}]" if self.rating else ""
+        return f"{self.seller.first_name} @ {self.work_day}: {self.amount} DA{rating_str}"
 
     def clean(self):
         if self.seller.role != 'seller':
             raise ValidationError("Employee must have the role 'seller'.")
+
+    @classmethod
+    def rating_to_score(cls, rating):
+        return cls.RATING_SCORE_MAP.get(rating, 0)
+
+    @classmethod
+    def score_to_rating(cls, score):
+        if not score or score <= 0:
+            return None
+        rounded = round(score)
+        rounded = max(1, min(8, rounded))
+        return cls.SCORE_RATING_MAP.get(rounded, 'C')
+

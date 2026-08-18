@@ -208,13 +208,14 @@ class WorkDayViewSet(viewsets.ModelViewSet):
         for s_data in sellers_data:
             seller_id = s_data.get('seller')
             amount = s_data.get('amount', 0)
+            rating = s_data.get('rating')
             notes = s_data.get('notes', '')
             if seller_id and amount is not None:
                 seller = get_object_or_404(Employee, id=seller_id, role='seller')
                 op, _ = SellerDailyOperation.objects.update_or_create(
                     work_day=work_day,
                     seller=seller,
-                    defaults={'amount': amount, 'notes': notes}
+                    defaults={'amount': amount, 'rating': rating, 'notes': notes}
                 )
                 saved_seller_ids.append(str(seller.id))
 
@@ -515,6 +516,7 @@ class SellerDailyOperationViewSet(viewsets.ModelViewSet):
         for op in operations_data:
             seller_id = op.get('seller')
             amount = op.get('amount')
+            rating = op.get('rating')
             notes = op.get('notes', '')
 
             if not seller_id or amount is None:
@@ -525,7 +527,7 @@ class SellerDailyOperationViewSet(viewsets.ModelViewSet):
             operation, created = SellerDailyOperation.objects.update_or_create(
                 work_day=work_day,
                 seller=seller,
-                defaults={'amount': amount, 'notes': notes}
+                defaults={'amount': amount, 'rating': rating, 'notes': notes}
             )
             saved_seller_ids.append(str(seller.id))
 

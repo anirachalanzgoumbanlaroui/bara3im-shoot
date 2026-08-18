@@ -545,11 +545,18 @@ class EmployeeDashboardService:
             'net_balance': net_balance,
         }
 
-        # 2. Streaks Calculations
+        # 2. Streaks & Ratings Calculations
         current_streak = 0
         longest_streak = 0
         temp_streak = 0
         prev_date = None
+
+        best_rating_score = 0
+        best_rating_val = None
+        rating_scores = []
+        best_day_op = None
+        highest_day_val = 0.0
+
         for op in ops:
             d = op.work_day.date
             if prev_date is None:
@@ -562,34 +569,60 @@ class EmployeeDashboardService:
             prev_date = d
             longest_streak = max(longest_streak, temp_streak)
 
+            op_amt = float(op.amount)
+            if op_amt >= highest_day_val:
+                highest_day_val = op_amt
+                best_day_op = op
+
+            if op.rating:
+                score = SellerDailyOperation.rating_to_score(op.rating)
+                rating_scores.append(score)
+                if score > best_rating_score:
+                    best_rating_score = score
+                    best_rating_val = op.rating
+
         if prev_date and (today - prev_date).days <= 1:
             current_streak = temp_streak
         else:
             current_streak = 0
 
-        highest_day_val = float(SellerDailyOperation.objects.filter(
-            seller=employee
-        ).aggregate(max_val=Max('amount'))['max_val'] or 0.0)
+        avg_rating_score = (sum(rating_scores) / len(rating_scores)) if rating_scores else 0
+        avg_rating_val = SellerDailyOperation.score_to_rating(avg_rating_score)
+
+        best_day_info = None
+        if best_day_op:
+            best_day_info = {
+                'date': best_day_op.work_day.date.isoformat(),
+                'amount': float(best_day_op.amount),
+                'rating': best_day_op.rating,
+                'location_name': best_day_op.work_day.location.name,
+            }
 
         total_working_days = len(ops)
         avg_daily_sales = lifetime_earnings / max(1, total_working_days)
 
         # 3. History list
         history_list = []
-        for op in reversed(ops[-15:]):
+        for op in reversed(ops[-30:]):
             history_list.append({
                 'id': str(op.id),
                 'date': op.work_day.date.isoformat(),
                 'amount': float(op.amount),
+                'rating': op.rating,
+                'rating_score': SellerDailyOperation.rating_to_score(op.rating),
+                'location_name': op.work_day.location.name,
                 'notes': op.notes or ''
             })
 
         # 4. Trend timeline points for graphs
         trend_timeline = []
-        for op in ops[-14:]:
+        for op in ops[-30:]:
             trend_timeline.append({
                 'date': op.work_day.date.isoformat(),
-                'amount': float(op.amount)
+                'amount': float(op.amount),
+                'rating': op.rating,
+                'rating_score': SellerDailyOperation.rating_to_score(op.rating),
+                'location_name': op.work_day.location.name,
             })
 
         # 5. Achievements
@@ -609,6 +642,14 @@ class EmployeeDashboardService:
                 'icon': '🏆',
                 'is_unlocked': longest_streak >= 7,
                 'progress': min(1.0, float(longest_streak) / 7.0)
+            },
+            {
+                'id': 'rating_a_plus',
+                'name': 'Top Performer',
+                'description': 'Achieve an A+ or A++ rating on a workday.',
+                'icon': '🌟',
+                'is_unlocked': best_rating_score >= 7,
+                'progress': 1.0 if best_rating_score >= 7 else (best_rating_score / 7.0)
             },
             {
                 'id': 'earned_100k',
@@ -642,6 +683,9 @@ class EmployeeDashboardService:
             'total_working_days': total_working_days,
             'lifetime_earnings': lifetime_earnings,
             'avg_daily_sales': avg_daily_sales,
+            'best_rating': best_rating_val,
+            'average_rating': avg_rating_val,
+            'best_day_info': best_day_info,
             'favorite_quote': 'Consistency beats motivation.'
         }
 

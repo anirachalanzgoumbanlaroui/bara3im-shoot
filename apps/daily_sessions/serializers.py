@@ -102,7 +102,7 @@ class SellerDailyOperationSerializer(serializers.ModelSerializer):
         model = SellerDailyOperation
         fields = [
             'id', 'seller', 'seller_name', 'work_day',
-            'amount', 'notes', 'created_at', 'updated_at'
+            'amount', 'rating', 'notes', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -113,6 +113,12 @@ class SellerDailyOperationSerializer(serializers.ModelSerializer):
         if value < 0:
             raise serializers.ValidationError("Amount cannot be negative.")
         return value
+
+    def validate_rating(self, value):
+        if value and value not in SellerDailyOperation.RatingChoices.values:
+            raise serializers.ValidationError(f"Invalid rating '{value}'. Must be one of {SellerDailyOperation.RatingChoices.values}.")
+        return value
+
 
     def validate(self, attrs):
         seller = attrs.get('seller')

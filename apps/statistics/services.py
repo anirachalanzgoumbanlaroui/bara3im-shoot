@@ -477,6 +477,13 @@ class StatisticsService:
         ):
             att_map[str(item['employee_id'])] = item
 
+        seller_ops_by_id = {}
+        for op in seller_ops:
+            s_id_str = str(op.seller_id)
+            if s_id_str not in seller_ops_by_id:
+                seller_ops_by_id[s_id_str] = []
+            seller_ops_by_id[s_id_str].append(op)
+
         leaderboard = []
         for seller_id_str, seller in sellers_dict.items():
             o_data = ops_map.get(seller.id) or ops_map.get(seller_id_str) or {}
@@ -484,6 +491,33 @@ class StatisticsService:
             cnt = o_data.get('cnt', 0)
             avg_rev = round(tot_rev / max(1, cnt), 2) if cnt > 0 else 0.0
             max_daily = float(o_data.get('mx', 0))
+
+            s_user_ops = seller_ops_by_id.get(seller_id_str, [])
+            best_rating_score = 0
+            best_rating = None
+            rating_scores = []
+            best_day_info = None
+            max_amt = 0.0
+
+            for op in s_user_ops:
+                amt = float(op.amount)
+                if amt >= max_amt:
+                    max_amt = amt
+                    best_day_info = {
+                        'date': op.work_day.date.strftime('%Y-%m-%d'),
+                        'amount': amt,
+                        'rating': op.rating,
+                        'location_name': op.work_day.location.name if op.work_day.location else '',
+                    }
+                if op.rating:
+                    score = SellerDailyOperation.rating_to_score(op.rating)
+                    rating_scores.append(score)
+                    if score > best_rating_score:
+                        best_rating_score = score
+                        best_rating = op.rating
+
+            avg_score = (sum(rating_scores) / len(rating_scores)) if rating_scores else 0
+            avg_rating = SellerDailyOperation.score_to_rating(avg_score)
 
             a_data = att_map.get(seller_id_str) or {}
             att_tot = a_data.get('tot', 0)
@@ -504,6 +538,9 @@ class StatisticsService:
                 'avg_revenue': avg_rev,
                 'highest_daily': max_daily,
                 'best_day': max_daily,
+                'best_rating': best_rating,
+                'average_rating': avg_rating,
+                'best_day_info': best_day_info,
                 'attendance_rate': att_rate,
                 'consistency_score': consistency_score,
             })
