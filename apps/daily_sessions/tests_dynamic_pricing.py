@@ -61,14 +61,14 @@ class DynamicPricingTestCase(TestCase):
         self.assertEqual(res_norm_40['photographer_unit_price'], Decimal('45.00'))
         self.assertEqual(res_norm_40['clown_unit_price'], Decimal('50.00'))
 
-        # Boundary test 3: 80 photos (== 80) -> Normal Volume
-        res_norm_80 = work_day.get_resolved_unit_prices(photo_count=80)
-        self.assertEqual(res_norm_80['tier'], 'normal')
-        self.assertEqual(res_norm_80['photographer_unit_price'], Decimal('45.00'))
-        self.assertEqual(res_norm_80['clown_unit_price'], Decimal('50.00'))
+        # Boundary test 3: 79 photos (< 80) -> Normal Volume
+        res_norm_79 = work_day.get_resolved_unit_prices(photo_count=79)
+        self.assertEqual(res_norm_79['tier'], 'normal')
+        self.assertEqual(res_norm_79['photographer_unit_price'], Decimal('45.00'))
+        self.assertEqual(res_norm_79['clown_unit_price'], Decimal('50.00'))
 
-        # Boundary test 4: 81 photos (> 80) -> High Volume
-        res_high = work_day.get_resolved_unit_prices(photo_count=81)
+        # Boundary test 4: 80 photos (>= 80) -> High Volume
+        res_high = work_day.get_resolved_unit_prices(photo_count=80)
         self.assertEqual(res_high['tier'], 'high')
         self.assertEqual(res_high['photographer_unit_price'], Decimal('50.00'))
         self.assertEqual(res_high['clown_unit_price'], Decimal('55.00'))

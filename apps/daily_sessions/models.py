@@ -175,12 +175,19 @@ class WorkDay(models.Model):
             }
 
         if photo_count is None:
-            photo_count = sum(t.team_photo_count for t in self.teams.all())
+            if self.pk:
+                try:
+                    aggr = self.teams.aggregate(total=models.Sum('team_photo_count'))['total']
+                    photo_count = aggr if aggr is not None else 0
+                except Exception:
+                    photo_count = sum(t.team_photo_count for t in self.teams.all())
+            else:
+                photo_count = sum(t.team_photo_count for t in self.teams.all())
 
         target_tier = 'normal'
         if photo_count < self.low_photo_threshold:
             target_tier = 'low'
-        elif photo_count > self.high_photo_threshold:
+        elif photo_count >= self.high_photo_threshold:
             target_tier = 'high'
 
         # Check activation status with fallback
