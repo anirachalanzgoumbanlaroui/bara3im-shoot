@@ -175,30 +175,30 @@ class WorkDaySerializer(serializers.ModelSerializer):
         total_photos = sum(t.team_photo_count for t in obj.teams.all())
         resolved = obj.get_resolved_unit_prices(photo_count=total_photos)
         return {
-            'dynamic_enabled': obj.dynamic_pricing_enabled,
-            'is_manually_overridden': obj.is_manually_overridden,
-            'tier': resolved['tier'],
+            'dynamic_enabled': bool(obj.dynamic_pricing_enabled),
+            'is_manually_overridden': bool(obj.is_manually_overridden),
+            'tier': resolved.get('tier', 'normal'),
             'total_photos': total_photos,
-            'low_tier_active': obj.low_tier_active,
-            'normal_tier_active': obj.normal_tier_active,
-            'high_tier_active': obj.high_tier_active,
+            'low_tier_active': bool(obj.low_tier_active),
+            'normal_tier_active': bool(obj.normal_tier_active),
+            'high_tier_active': bool(obj.high_tier_active),
             'photographer': {
-                'normal': float(obj.photographer_unit_price),
-                'low': float(obj.low_photographer_price),
-                'high': float(obj.high_photographer_price),
+                'normal': float(obj.photographer_unit_price or 45),
+                'low': float(obj.low_photographer_price or 40),
+                'high': float(obj.high_photographer_price or 50),
                 'override': float(obj.override_photographer_price) if obj.override_photographer_price is not None else None,
-                'current': float(resolved['photographer_unit_price']),
+                'current': float(resolved.get('photographer_unit_price') or 45),
             },
             'clown': {
-                'normal': float(obj.clown_unit_price),
-                'low': float(obj.low_clown_price),
-                'high': float(obj.high_clown_price),
+                'normal': float(obj.clown_unit_price or 50),
+                'low': float(obj.low_clown_price or 45),
+                'high': float(obj.high_clown_price or 55),
                 'override': float(obj.override_clown_price) if obj.override_clown_price is not None else None,
-                'current': float(resolved['clown_unit_price']),
+                'current': float(resolved.get('clown_unit_price') or 50),
             },
             'thresholds': {
-                'low': obj.low_photo_threshold,
-                'high': obj.high_photo_threshold,
+                'low': obj.low_photo_threshold or 40,
+                'high': obj.high_photo_threshold or 80,
             }
         }
 
@@ -218,11 +218,6 @@ class WorkDaySerializer(serializers.ModelSerializer):
         if low_t is not None and high_t is not None and low_t >= high_t:
             raise serializers.ValidationError({"low_photo_threshold": "low_photo_threshold must be strictly less than high_photo_threshold."})
         return attrs
-
-    def to_representation(self, instance):
-        if hasattr(instance, '_prefetched_objects_cache'):
-            instance._prefetched_objects_cache = {}
-        return super().to_representation(instance)
 
     def create(self, validated_data):
         location = validated_data['location']
