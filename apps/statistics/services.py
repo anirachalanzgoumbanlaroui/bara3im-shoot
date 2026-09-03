@@ -1921,3 +1921,506 @@ class StatisticsService:
             ],
             'badges': badges,
         }
+
+    # --------------------------------------------------------------------------
+    # TEAM ANALYTICS (Grouped Bar, Total Output, Balance, History)
+    # --------------------------------------------------------------------------
+    @classmethod
+    def get_team_analytics(cls, time_filter='this_month', location_id=None, start_date=None, end_date=None):
+        cache_key = f"stats_teams_analytics_{time_filter}_{location_id}_{start_date}_{end_date}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
+
+        teams_qs = DailyTeam.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=cls.VALID_STATUSES
+        ).select_related('photographer', 'clown', 'work_day')
+
+        if location_id:
+            teams_qs = teams_qs.filter(work_day__location_id=location_id)
+
+        # Get performance breakdown per team for photographer vs clown
+        team_pairs = {}
+        for team in teams_qs:
+            pair_key = (str(team.photographer.id), str(team.clown.id))
+            
+            # Fetch performance records for photographer and clown on this workday
+            photo_perf = DailyEmployeePerformance.objects.filter(
+                work_day=team.work_day, employee=team.photographer
+            ).first()
+            clown_perf = DailyEmployeePerformance.objects.filter(
+                work_day=team.work_day, employee=team.clown
+            ).first()
+
+            photo_cnt = photo_perf.photo_count if photo_perf else team.team_photo_count
+            clown_cnt = clown_perf.photo_count if clown_perf else team.team_photo_count
+
+            if pair_key not in team_pairs:
+                team_pairs[pair_key] = {
+                    'photographer_id': str(team.photographer.id),
+                    'photographer_name': f"{team.photographer.first_name} {team.photographer.last_name}",
+                    'photographer_short': team.photographer.first_name,
+                    'clown_id': str(team.clown.id),
+                    'clown_name': f"{team.clown.first_name} {team.clown.last_name}",
+                    'clown_short': team.clown.first_name,
+                    'team_name': team.team_name or f"{team.photographer.first_name} & {team.clown.first_name}",
+                    'photographer_photos': 0,
+                    'clown_photos': 0,
+                    'total_photos': 0,
+                    'work_days_count': 0,
+                    'history': [],
+                }
+
+            team_pairs[pair_key]['photographer_photos'] += photo_cnt
+            team_pairs[pair_key]['clown_photos'] += clown_cnt
+            team_pairs[pair_key]['total_photos'] += (photo_cnt + clown_cnt)
+            team_pairs[pair_key]['work_days_count'] += 1
+            team_pairs[pair_key]['history'].append({
+                'date': team.work_day.date.strftime('%Y-%m-%d'),
+                'photographer_photos': photo_cnt,
+                'clown_photos': clown_cnt,
+                'total_photos': photo_cnt + clown_cnt,
+            })
+
+        teams_list = []
+        for key, item in team_pairs.items():
+            diff = abs(item['photographer_photos'] - item['clown_photos'])
+            avg_photos = round(item['total_photos'] / max(1, item['work_days_count']), 1)
+            teams_list.append({
+                'team_id': f"{item['photographer_id']}_{item['clown_id']}",
+                'team_name': item['team_name'],
+                'photographer_name': item['photographer_name'],
+                'photographer_short': item['photographer_short'],
+                'clown_name': item['clown_name'],
+                'clown_short': item['clown_short'],
+                'photographer_photos': item['photographer_photos'],
+                'clown_photos': item['clown_photos'],
+                'total_photos': item['total_photos'],
+                'balance_difference': diff,
+                'work_days_count': item['work_days_count'],
+                'avg_photos': avg_photos,
+                'history': sorted(item['history'], key=lambda x: x['date']),
+            })
+
+        # Sort teams by total photos DESC
+        teams_list.sort(key=lambda x: (-x['total_photos'], x['balance_difference'], x['team_name']))
+
+        for idx, item in enumerate(teams_list):
+            item['rank'] = idx + 1
+
+        best_team = teams_list[0] if teams_list else None
+        most_balanced = min(teams_list, key=lambda x: x['balance_difference']) if teams_list else None
+
+        res = {
+            'teams': teams_list,
+            'best_team': best_team,
+            'most_balanced_team': most_balanced,
+            'total_teams_count': len(teams_list),
+        }
+
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
+        return res
+
+    # --------------------------------------------------------------------------
+    # ROLE GLOBAL COMPARISON (Photographers vs Clowns)
+    # --------------------------------------------------------------------------
+    @classmethod
+    def get_role_comparison_stats(cls, time_filter='this_month', location_id=None, start_date=None, end_date=None):
+        cache_key = f"stats_role_comparison_{time_filter}_{location_id}_{start_date}_{end_date}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
+
+        perfs_qs = DailyEmployeePerformance.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=cls.VALID_STATUSES
+        )
+
+        if location_id:
+            perfs_qs = perfs_qs.filter(work_day__location_id=location_id)
+
+        photo_total = perfs_qs.filter(employee__role='photographer').aggregate(tot=Coalesce(Sum('photo_count'), 0))['tot']
+        clown_total = perfs_qs.filter(employee__role='clown').aggregate(tot=Coalesce(Sum('photo_count'), 0))['tot']
+
+        grand_total = photo_total + clown_total
+        photo_pct = round((photo_total / max(1, grand_total)) * 100, 1) if grand_total > 0 else 50.0
+        clown_pct = round((clown_total / max(1, grand_total)) * 100, 1) if grand_total > 0 else 50.0
+
+        res = {
+            'photographer_photos': photo_total,
+            'clown_photos': clown_total,
+            'grand_total': grand_total,
+            'photographer_percentage': photo_pct,
+            'clown_percentage': clown_pct,
+        }
+
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
+        return res
+
+    # --------------------------------------------------------------------------
+    # EMPLOYEE TREND ANALYTICS (Stable Colors, Improvement, Consistency)
+    # --------------------------------------------------------------------------
+    STABLE_PALETTE = [
+        '#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#8B5CF6',
+        '#EC4899', '#06B6D4', '#F97316', '#84CC16', '#6366F1',
+        '#14B8A6', '#D97706', '#E11D48', '#0284C7', '#7C3AED',
+    ]
+
+    @classmethod
+    def _get_stable_employee_color(cls, employee_id, index=0):
+        try:
+            val = int(str(employee_id).replace('-', '')[:8], 16)
+            return cls.STABLE_PALETTE[val % len(cls.STABLE_PALETTE)]
+        except Exception:
+            return cls.STABLE_PALETTE[index % len(cls.STABLE_PALETTE)]
+
+    @classmethod
+    def get_employee_trend_analytics(cls, time_filter='this_month', location_id=None, start_date=None, end_date=None):
+        cache_key = f"stats_emp_trends_{time_filter}_{location_id}_{start_date}_{end_date}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
+        period_days = max(1, (e_date - s_date).days + 1)
+        prev_end = s_date - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=period_days - 1)
+
+        perfs_qs = DailyEmployeePerformance.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=cls.VALID_STATUSES
+        ).select_related('employee', 'work_day')
+
+        if location_id:
+            perfs_qs = perfs_qs.filter(work_day__location_id=location_id)
+
+        emp_ids = list(perfs_qs.values_list('employee_id', flat=True).distinct())
+        employees = Employee.objects.filter(id__in=emp_ids)
+
+        emp_analytics_list = []
+        for idx, emp in enumerate(employees):
+            emp_perfs = perfs_qs.filter(employee=emp).order_by('work_day__date')
+            tot_photos = emp_perfs.aggregate(tot=Coalesce(Sum('photo_count'), 0))['tot']
+            work_days_cnt = emp_perfs.count()
+            avg_photos = round(tot_photos / max(1, work_days_cnt), 1) if work_days_cnt > 0 else 0.0
+
+            daily_list = [p.photo_count for p in emp_perfs]
+            consistency_info = cls._calculate_consistency(daily_list)
+
+            # Timeline
+            timeline = [
+                {'date': p.work_day.date.strftime('%Y-%m-%d'), 'photos': p.photo_count}
+                for p in emp_perfs
+            ]
+
+            # Previous period performance for improvement / decline
+            prev_perfs = DailyEmployeePerformance.objects.filter(
+                employee=emp,
+                work_day__date__range=(prev_start, prev_end),
+                work_day__status__in=cls.VALID_STATUSES
+            )
+            if location_id:
+                prev_perfs = prev_perfs.filter(work_day__location_id=location_id)
+            prev_tot = prev_perfs.aggregate(tot=Coalesce(Sum('photo_count'), 0))['tot']
+            prev_cnt = prev_perfs.count()
+            prev_avg = round(prev_tot / max(1, prev_cnt), 1) if prev_cnt > 0 else 0.0
+
+            if prev_avg > 0:
+                change_pct = round(((avg_photos - prev_avg) / prev_avg) * 100, 1)
+            else:
+                change_pct = 0.0
+
+            emp_analytics_list.append({
+                'employee_id': str(emp.id),
+                'name': f"{emp.first_name} {emp.last_name}",
+                'short_name': emp.first_name,
+                'role': emp.role,
+                'avatar': emp.avatar.url if emp.avatar else None,
+                'color': cls._get_stable_employee_color(emp.id, idx),
+                'total_photos': tot_photos,
+                'work_days_count': work_days_cnt,
+                'average_photos_per_day': avg_photos,
+                'consistency_score': consistency_info['consistency_score'],
+                'consistency_label': consistency_info['consistency_label'],
+                'previous_average': prev_avg,
+                'change_percent': change_pct,
+                'is_improved': change_pct > 0,
+                'is_declining': change_pct < 0,
+                'timeline': timeline,
+            })
+
+        # Sort by total_photos DESC
+        emp_analytics_list.sort(key=lambda x: (-x['total_photos'], -x['average_photos_per_day'], x['name']))
+
+        most_improved = [e for e in emp_analytics_list if e['is_improved']]
+        most_improved.sort(key=lambda x: -x['change_percent'])
+
+        declining = [e for e in emp_analytics_list if e['is_declining']]
+        declining.sort(key=lambda x: x['change_percent'])
+
+        res = {
+            'employees': emp_analytics_list,
+            'most_improved': most_improved[:5],
+            'declining': declining[:5],
+        }
+
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
+        return res
+
+    # --------------------------------------------------------------------------
+    # DAILY WORKDAY ANALYTICS (Used in Daily Operations workspace)
+    # --------------------------------------------------------------------------
+    @classmethod
+    def get_daily_workday_analytics(cls, date_str=None, location_id=None):
+        if not date_str:
+            target_date = timezone.now().date()
+        else:
+            try:
+                target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            except Exception:
+                target_date = timezone.now().date()
+
+        workdays = WorkDay.objects.filter(date=target_date)
+        if location_id:
+            workdays = workdays.filter(location_id=location_id)
+
+        workday = workdays.first()
+        if not workday:
+            return {
+                'has_data': False,
+                'date': target_date.strftime('%Y-%m-%d'),
+                'total_photos': 0,
+                'teams_count': 0,
+                'avg_team_photos': 0,
+                'teams': [],
+            }
+
+        teams_qs = DailyTeam.objects.filter(work_day=workday).select_related('photographer', 'clown')
+        team_list = []
+        tot_photos = 0
+
+        for t in teams_qs:
+            photo_perf = DailyEmployeePerformance.objects.filter(work_day=workday, employee=t.photographer).first()
+            clown_perf = DailyEmployeePerformance.objects.filter(work_day=workday, employee=t.clown).first()
+
+            p_cnt = photo_perf.photo_count if photo_perf else t.team_photo_count
+            c_cnt = clown_perf.photo_count if clown_perf else t.team_photo_count
+            t_total = p_cnt + c_cnt
+            tot_photos += t_total
+
+            team_list.append({
+                'team_id': str(t.id),
+                'team_name': t.team_name or f"{t.photographer.first_name} & {t.clown.first_name}",
+                'photographer_name': f"{t.photographer.first_name} {t.photographer.last_name}",
+                'photographer_photos': p_cnt,
+                'clown_name': f"{t.clown.first_name} {t.clown.last_name}",
+                'clown_photos': c_cnt,
+                'total_photos': t_total,
+                'balance_difference': abs(p_cnt - c_cnt),
+            })
+
+        team_list.sort(key=lambda x: -x['total_photos'])
+
+        avg_team_photos = round(tot_photos / max(1, len(team_list)), 1)
+        best_team = team_list[0] if team_list else None
+        worst_team = team_list[-1] if team_list else None
+
+        # Best Photographer & Best Clown today
+        best_photo_name = None
+        best_photo_cnt = 0
+        best_clown_name = None
+        best_clown_cnt = 0
+
+        for item in team_list:
+            if item['photographer_photos'] > best_photo_cnt:
+                best_photo_cnt = item['photographer_photos']
+                best_photo_name = item['photographer_name']
+            if item['clown_photos'] > best_clown_cnt:
+                best_clown_cnt = item['clown_photos']
+                best_clown_name = item['clown_name']
+
+        return {
+            'has_data': True,
+            'date': target_date.strftime('%Y-%m-%d'),
+            'location_name': workday.location.name if workday.location else '',
+            'total_photos': tot_photos,
+            'teams_count': len(team_list),
+            'avg_team_photos': avg_team_photos,
+            'best_team': best_team,
+            'worst_team': worst_team,
+            'best_photographer': {'name': best_photo_name, 'photos': best_photo_cnt} if best_photo_name else None,
+            'best_clown': {'name': best_clown_name, 'photos': best_clown_cnt} if best_clown_name else None,
+            'teams': team_list,
+        }
+
+    # --------------------------------------------------------------------------
+    # DAILY PRODUCTION ANALYTICS (Trends, Best/Worst Days, Distribution Brackets)
+    # --------------------------------------------------------------------------
+    @classmethod
+    def get_daily_production_analytics(cls, time_filter='this_month', location_id=None, start_date=None, end_date=None):
+        cache_key = f"stats_daily_prod_{time_filter}_{location_id}_{start_date}_{end_date}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
+
+        teams_qs = DailyTeam.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=cls.VALID_STATUSES
+        )
+
+        if location_id:
+            teams_qs = teams_qs.filter(work_day__location_id=location_id)
+
+        # Aggregate photos per date
+        daily_map = {}
+        for item in teams_qs.values('work_day__date').annotate(tot=Coalesce(Sum('team_photo_count'), 0)):
+            daily_map[item['work_day__date']] = item['tot']
+
+        daily_trends = []
+        days_ranking = []
+        curr_d = s_date
+        while curr_d <= e_date:
+            photos = daily_map.get(curr_d, 0)
+            daily_trends.append({
+                'date': curr_d.strftime('%Y-%m-%d'),
+                'day_name': curr_d.strftime('%a'),
+                'photos': photos,
+            })
+            if photos > 0:
+                days_ranking.append({
+                    'date': curr_d.strftime('%Y-%m-%d'),
+                    'day_formatted': curr_d.strftime('%d %b'),
+                    'photos': photos,
+                })
+            curr_d += timedelta(days=1)
+            if len(daily_trends) > 90:
+                break
+
+        days_ranking.sort(key=lambda x: -x['photos'])
+        top_days = days_ranking[:5]
+        bottom_days = sorted(days_ranking, key=lambda x: x['photos'])[:5]
+
+        # Photo distribution brackets across employees
+        perfs_qs = DailyEmployeePerformance.objects.filter(
+            work_day__date__range=(s_date, e_date),
+            work_day__status__in=cls.VALID_STATUSES
+        )
+        if location_id:
+            perfs_qs = perfs_qs.filter(work_day__location_id=location_id)
+
+        brackets = {
+            '0-20': 0,
+            '21-40': 0,
+            '41-60': 0,
+            '61-80': 0,
+            '81-100': 0,
+            '100+': 0,
+        }
+
+        for perf in perfs_qs:
+            cnt = perf.photo_count
+            if cnt <= 20:
+                brackets['0-20'] += 1
+            elif cnt <= 40:
+                brackets['21-40'] += 1
+            elif cnt <= 60:
+                brackets['41-60'] += 1
+            elif cnt <= 80:
+                brackets['61-80'] += 1
+            elif cnt <= 100:
+                brackets['81-100'] += 1
+            else:
+                brackets['100+'] += 1
+
+        distribution = [
+            {'range': k, 'count': v} for k, v in brackets.items()
+        ]
+
+        res = {
+            'daily_trends': daily_trends,
+            'top_days': top_days,
+            'bottom_days': bottom_days,
+            'distribution': distribution,
+        }
+
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
+        return res
+
+    # --------------------------------------------------------------------------
+    # PERIOD COMPARISON (Month vs Month, Week vs Week Growth Metrics)
+    # --------------------------------------------------------------------------
+    @classmethod
+    def get_period_comparison_stats(cls, time_filter='this_month', location_id=None, start_date=None, end_date=None):
+        cache_key = f"stats_period_comp_{time_filter}_{location_id}_{start_date}_{end_date}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
+        period_days = max(1, (e_date - s_date).days + 1)
+        prev_end = s_date - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=period_days - 1)
+
+        curr_teams = DailyTeam.objects.filter(work_day__date__range=(s_date, e_date), work_day__status__in=cls.VALID_STATUSES)
+        prev_teams = DailyTeam.objects.filter(work_day__date__range=(prev_start, prev_end), work_day__status__in=cls.VALID_STATUSES)
+
+        curr_sellers = SellerDailyOperation.objects.filter(work_day__date__range=(s_date, e_date), work_day__status__in=cls.VALID_STATUSES)
+        prev_sellers = SellerDailyOperation.objects.filter(work_day__date__range=(prev_start, prev_end), work_day__status__in=cls.VALID_STATUSES)
+
+        if location_id:
+            curr_teams = curr_teams.filter(work_day__location_id=location_id)
+            prev_teams = prev_teams.filter(work_day__location_id=location_id)
+            curr_sellers = curr_sellers.filter(work_day__location_id=location_id)
+            prev_sellers = prev_sellers.filter(work_day__location_id=location_id)
+
+        curr_photos = curr_teams.aggregate(tot=Coalesce(Sum('team_photo_count'), 0))['tot']
+        prev_photos = prev_teams.aggregate(tot=Coalesce(Sum('team_photo_count'), 0))['tot']
+
+        curr_revenue = float(curr_sellers.aggregate(tot=Coalesce(Sum('amount'), 0, output_field=FloatField()))['tot'])
+        prev_revenue = float(prev_sellers.aggregate(tot=Coalesce(Sum('amount'), 0, output_field=FloatField()))['tot'])
+
+        photo_growth_pct = round(((curr_photos - prev_photos) / max(1, prev_photos)) * 100, 1) if prev_photos > 0 else 0.0
+        revenue_growth_pct = round(((curr_revenue - prev_revenue) / max(1.0, prev_revenue)) * 100, 1) if prev_revenue > 0 else 0.0
+
+        res = {
+            'current_period': {
+                'start': s_date.strftime('%Y-%m-%d'),
+                'end': e_date.strftime('%Y-%m-%d'),
+                'photos': curr_photos,
+                'revenue': curr_revenue,
+            },
+            'previous_period': {
+                'start': prev_start.strftime('%Y-%m-%d'),
+                'end': prev_end.strftime('%Y-%m-%d'),
+                'photos': prev_photos,
+                'revenue': prev_revenue,
+            },
+            'photo_growth_percent': photo_growth_pct,
+            'revenue_growth_percent': revenue_growth_pct,
+        }
+
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
+        return res
+

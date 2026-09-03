@@ -118,3 +118,41 @@ class StatisticsViewSet(viewsets.ViewSet):
         tf, loc, s_date, e_date = self._get_params(request)
         card_data = StatisticsService.get_fifa_reveal(category, tf, loc, s_date, e_date)
         return Response(card_data)
+
+    @action(detail=False, methods=['get'], url_path='teams-analytics')
+    def teams_analytics(self, request):
+        tf, loc, s_date, e_date = self._get_params(request)
+        data = StatisticsService.get_team_analytics(tf, loc, s_date, e_date)
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='role-comparison')
+    def role_comparison(self, request):
+        tf, loc, s_date, e_date = self._get_params(request)
+        data = StatisticsService.get_role_comparison_stats(tf, loc, s_date, e_date)
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='employee-trends')
+    def employee_trends(self, request):
+        tf, loc, s_date, e_date = self._get_params(request)
+        data = StatisticsService.get_employee_trend_analytics(tf, loc, s_date, e_date)
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='daily-workday-analytics')
+    def daily_workday_analytics(self, request):
+        date_str = request.query_params.get('date')
+        loc = request.query_params.get('location')
+        data = StatisticsService.get_daily_workday_analytics(date_str, loc)
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='daily-production')
+    def daily_production(self, request):
+        tf, loc, s_date, e_date = self._get_params(request)
+        data = StatisticsService.get_daily_production_analytics(tf, loc, s_date, e_date)
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='period-comparison')
+    def period_comparison(self, request):
+        tf, loc, s_date, e_date = self._get_params(request)
+        data = StatisticsService.get_period_comparison_stats(tf, loc, s_date, e_date)
+        return Response(data)
+
