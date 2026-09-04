@@ -106,6 +106,30 @@ class StatisticsViewSet(viewsets.ViewSet):
             return Response(data, status=404)
         return Response(data)
 
+    @action(detail=False, methods=['get'], url_path='admin-employee-profile/(?P<employee_id>[^/.]+)')
+    def admin_employee_profile(self, request, employee_id=None):
+        """
+        Admin-only comprehensive employee performance profile dossier.
+        GET /api/statistics/admin-employee-profile/{employee_id}/
+        """
+        if getattr(request.user, 'role', '') != 'admin':
+            return Response({'detail': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+        tf, loc, s_date, e_date = self._get_params(request)
+        compare_to = request.query_params.get('compare_to')
+        data = StatisticsService.get_admin_employee_profile(
+            employee_id,
+            time_filter=tf,
+            location_id=loc,
+            start_date=s_date,
+            end_date=e_date,
+            compare_to_id=compare_to,
+        )
+        if 'error' in data:
+            return Response(data, status=404)
+        return Response(data)
+
+
     @action(detail=False, methods=['get'], url_path='nadjib')
     def nadjib(self, request):
         tf, loc, s_date, e_date = self._get_params(request)

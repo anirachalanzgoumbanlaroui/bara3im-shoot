@@ -13,22 +13,26 @@ class LocationSerializer(serializers.ModelSerializer):
 class DailyEmployeePerformanceSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     employee_role = serializers.SerializerMethodField()
+    unit_price = serializers.SerializerMethodField()
     daily_earnings = serializers.SerializerMethodField()
 
     class Meta:
         model = DailyEmployeePerformance
         fields = [
             'id', 'employee', 'employee_name', 'employee_role', 'work_day', 'team',
-            'photo_count', 'adjustment_type', 'adjustment_reason', 'daily_earnings',
+            'photo_count', 'adjustment_type', 'adjustment_reason', 'unit_price', 'daily_earnings',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'employee', 'work_day', 'team', 'daily_earnings', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'employee', 'work_day', 'team', 'unit_price', 'daily_earnings', 'created_at', 'updated_at']
 
     def get_employee_name(self, obj):
         return f"{obj.employee.first_name} {obj.employee.last_name}"
 
     def get_employee_role(self, obj):
         return obj.employee.role
+
+    def get_unit_price(self, obj):
+        return str(obj.work_day.calculate_employee_unit_price(obj.employee.role, obj.photo_count))
 
     def get_daily_earnings(self, obj):
         return str(DailyOperationsService.calculate_employee_earnings(obj))
@@ -172,7 +176,7 @@ class WorkDaySerializer(serializers.ModelSerializer):
         return obj.created_by.username if obj.created_by else None
 
     def get_pricing(self, obj):
-        total_photos = sum(t.team_photo_count for t in obj.teams.all())
+        total_photos = obj.total_photos
         resolved = obj.get_resolved_unit_prices(photo_count=total_photos)
         return {
             'dynamic_enabled': bool(obj.dynamic_pricing_enabled),
@@ -256,7 +260,7 @@ class WorkDayListSerializer(serializers.ModelSerializer):
         return obj.teams.count()
 
     def get_total_photos(self, obj):
-        return sum(t.team_photo_count for t in obj.teams.all())
+        return obj.total_photos
 
     def get_seller_earnings(self, obj):
         return str(sum(op.amount for op in obj.seller_operations.all()))

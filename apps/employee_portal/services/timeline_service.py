@@ -29,8 +29,7 @@ class TimelineService:
         ).select_related('work_day').order_by('-updated_at')[:20]
         
         for perf in performances:
-            res = perf.work_day.get_resolved_unit_prices()
-            unit_price = res['photographer_unit_price'] if employee.role == 'photographer' else res['clown_unit_price']
+            unit_price = perf.work_day.calculate_employee_unit_price(employee.role, perf.photo_count)
             earnings = perf.photo_count * unit_price
             events.append({
                 'type': 'work_results',

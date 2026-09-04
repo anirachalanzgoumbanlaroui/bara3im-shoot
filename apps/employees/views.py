@@ -466,6 +466,34 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             'password_logs': PasswordChangeLogSerializer(password_logs, many=True).data,
         })
 
+    @action(detail=True, methods=['get'], url_path='admin-profile')
+    def admin_profile(self, request, pk=None):
+        """
+        Admin-only comprehensive employee profile & performance analytics dossier.
+        GET /api/employees/{id}/admin-profile/
+        """
+        if getattr(request.user, 'role', '') != 'admin':
+            return Response({'detail': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+        employee = self.get_object()
+        tf = request.query_params.get('time_filter', 'this_month')
+        loc = request.query_params.get('location')
+        s_date = request.query_params.get('start_date')
+        e_date = request.query_params.get('end_date')
+        compare_to = request.query_params.get('compare_to')
+
+        from apps.statistics.services import StatisticsService
+        data = StatisticsService.get_admin_employee_profile(
+            str(employee.id),
+            time_filter=tf,
+            location_id=loc,
+            start_date=s_date,
+            end_date=e_date,
+            compare_to_id=compare_to,
+        )
+        return Response(data)
+
+
 
 class AdminResetPasswordView(APIView):
     """

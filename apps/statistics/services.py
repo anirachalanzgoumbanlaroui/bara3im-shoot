@@ -135,11 +135,10 @@ class StatisticsService:
 
         # Revenue computations
         photo_rev = 0
-        for wd in workdays_qs.prefetch_related('teams'):
-            wd_photos = sum(t.team_photo_count for t in wd.teams.all())
-            res = wd.get_resolved_unit_prices(photo_count=wd_photos)
-            unit_total = float(res['photographer_unit_price'] + res['clown_unit_price'])
-            photo_rev += wd_photos * unit_total
+        for wd in workdays_qs.prefetch_related('performances', 'performances__employee'):
+            for perf in wd.performances.all():
+                u_price = float(wd.calculate_employee_unit_price(perf.employee.role, perf.photo_count))
+                photo_rev += perf.photo_count * u_price
 
         seller_rev = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
         total_revenue = photo_rev + seller_rev
@@ -849,11 +848,10 @@ class StatisticsService:
             deductions_qs = deductions_qs.filter(employee_id__in=loc_emp_ids)
 
         photo_revenue = 0
-        for wd in workdays_qs.prefetch_related('teams'):
-            wd_photos = sum(t.team_photo_count for t in wd.teams.all())
-            res = wd.get_resolved_unit_prices(photo_count=wd_photos)
-            unit_total = float(res['photographer_unit_price'] + res['clown_unit_price'])
-            photo_revenue += wd_photos * unit_total
+        for wd in workdays_qs.prefetch_related('performances', 'performances__employee'):
+            for perf in wd.performances.all():
+                u_price = float(wd.calculate_employee_unit_price(perf.employee.role, perf.photo_count))
+                photo_revenue += perf.photo_count * u_price
 
         seller_revenue = float(sellers_qs.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
         total_revenue = photo_revenue + seller_revenue
@@ -875,10 +873,10 @@ class StatisticsService:
             l_workdays = workdays_qs.filter(location=loc)
             l_sellers = sellers_qs.filter(work_day__location=loc)
             l_photo_rev = 0
-            for wd in l_workdays.prefetch_related('teams'):
-                w_pics = sum(t.team_photo_count for t in wd.teams.all())
-                res = wd.get_resolved_unit_prices(photo_count=w_pics)
-                l_photo_rev += w_pics * float(res['photographer_unit_price'] + res['clown_unit_price'])
+            for wd in l_workdays.prefetch_related('performances', 'performances__employee'):
+                for perf in wd.performances.all():
+                    u_price = float(wd.calculate_employee_unit_price(perf.employee.role, perf.photo_count))
+                    l_photo_rev += perf.photo_count * u_price
             l_seller_rev = float(l_sellers.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
             revenue_by_location.append({
                 'location_id': str(loc.id),
@@ -900,10 +898,10 @@ class StatisticsService:
         while curr_d <= e_date:
             d_workdays = workdays_qs.filter(date=curr_d)
             d_photo_rev = 0
-            for wd in d_workdays.prefetch_related('teams'):
-                w_pics = sum(t.team_photo_count for t in wd.teams.all())
-                res = wd.get_resolved_unit_prices(photo_count=w_pics)
-                d_photo_rev += w_pics * float(res['photographer_unit_price'] + res['clown_unit_price'])
+            for wd in d_workdays.prefetch_related('performances', 'performances__employee'):
+                for perf in wd.performances.all():
+                    u_price = float(wd.calculate_employee_unit_price(perf.employee.role, perf.photo_count))
+                    d_photo_rev += perf.photo_count * u_price
             d_seller_rev = daily_sellers.get(curr_d, 0.0)
             d_total = d_photo_rev + d_seller_rev
 
@@ -961,10 +959,10 @@ class StatisticsService:
             pics = teams.aggregate(total=Coalesce(Sum('team_photo_count'), 0))['total']
             
             photo_rev = 0
-            for wd in workdays.prefetch_related('teams'):
-                w_pics = sum(t.team_photo_count for t in wd.teams.all())
-                res = wd.get_resolved_unit_prices(photo_count=w_pics)
-                photo_rev += w_pics * float(res['photographer_unit_price'] + res['clown_unit_price'])
+            for wd in workdays.prefetch_related('performances', 'performances__employee'):
+                for perf in wd.performances.all():
+                    u_price = float(wd.calculate_employee_unit_price(perf.employee.role, perf.photo_count))
+                    photo_rev += perf.photo_count * u_price
 
             seller_rev = float(sellers.aggregate(total=Coalesce(Sum('amount'), 0, output_field=FloatField()))['total'])
             tot_rev = photo_rev + seller_rev
@@ -1800,6 +1798,518 @@ class StatisticsService:
                     'time_filter': time_filter,
                 },
             }
+
+        try:
+            cache.set(cache_key, result, CACHE_TIMEOUT)
+        except Exception:
+            pass
+        return result
+
+    # --------------------------------------------------------------------------
+    # ADMIN EMPLOYEE PERFORMANCE PROFILE DOSSIER
+    # --------------------------------------------------------------------------
+    @classmethod
+    def get_admin_employee_profile(
+        cls,
+        employee_id,
+        time_filter='this_month',
+        location_id=None,
+        start_date=None,
+        end_date=None,
+        compare_to_id=None,
+    ):
+        """
+        Comprehensive Admin Employee Performance Profile Dossier.
+        Combines work output, daily/monthly earnings, bonuses, deductions,
+        advances, net earnings, attendance matrix, team partner statistics, location breakdown,
+        linear trend regression, chronological work history, and side-by-side comparison.
+        """
+        try:
+            employee = Employee.objects.get(id=employee_id)
+        except Employee.DoesNotExist:
+            return {'error': 'Employee not found'}
+
+        cache_key = f"stats_admin_emp_prof_{employee_id}_{time_filter}_{location_id}_{start_date}_{end_date}_{compare_to_id}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
+        period_days = max(1, (e_date - s_date).days + 1)
+        is_seller = employee.role == 'seller'
+
+        emp_info = {
+            'id': str(employee.id),
+            'name': f"{employee.first_name} {employee.last_name}",
+            'first_name': employee.first_name,
+            'last_name': employee.last_name,
+            'role': employee.role,
+            'employee_code': employee.employee_code,
+            'avatar': employee.avatar.url if employee.avatar else None,
+            'hiring_date': employee.hiring_date.strftime('%Y-%m-%d') if employee.hiring_date else None,
+            'status': employee.status,
+            'is_active': employee.is_active,
+            'phone_number': employee.phone_number or '',
+            'notes': employee.notes or '',
+        }
+
+        # ── 1. FINANCIAL AUXILIARIES: BONUSES, DEDUCTIONS, ADVANCES ──────────
+        bonuses_qs = Bonus.objects.filter(employee=employee, date__range=(s_date, e_date))
+        deductions_qs = Deduction.objects.filter(employee=employee, date__range=(s_date, e_date))
+        advances_qs = Advance.objects.filter(employee=employee, date__range=(s_date, e_date))
+
+        tot_bonuses = float(bonuses_qs.aggregate(t=Coalesce(Sum('amount'), 0, output_field=FloatField()))['t'])
+        tot_deductions = float(deductions_qs.aggregate(t=Coalesce(Sum('amount'), 0, output_field=FloatField()))['t'])
+        tot_advances = float(advances_qs.aggregate(t=Coalesce(Sum('amount'), 0, output_field=FloatField()))['t'])
+
+        daily_bonuses = {
+            b['date'].strftime('%Y-%m-%d'): float(b['tot'])
+            for b in bonuses_qs.values('date').annotate(tot=Sum('amount'))
+        }
+        daily_deductions = {
+            d['date'].strftime('%Y-%m-%d'): float(d['tot'])
+            for d in deductions_qs.values('date').annotate(tot=Sum('amount'))
+        }
+        daily_advances = {
+            a['date'].strftime('%Y-%m-%d'): float(a['tot'])
+            for a in advances_qs.values('date').annotate(tot=Sum('amount'))
+        }
+
+        # ── 2. ATTENDANCE & CALENDAR HEATMAP ──────────────────────────────────
+        att_qs = AttendanceRecord.objects.filter(employee=employee, date__range=(s_date, e_date)).order_by('date')
+        att_tot = att_qs.count()
+        att_pres = att_qs.filter(status__in=['present', 'late']).count()
+        att_absent = att_qs.filter(status='absent').count()
+        att_late = att_qs.filter(status='late').count()
+        att_rate = round((att_pres / max(1, att_tot)) * 100, 1) if att_tot > 0 else 98.0
+
+        attendance_calendar = [
+            {
+                'date': r.date.strftime('%Y-%m-%d'),
+                'status': r.status,
+                'minutes_late': r.minutes_late,
+                'check_in_time': str(r.check_in_time) if r.check_in_time else None,
+            }
+            for r in att_qs
+        ]
+
+        # ── 3. WORK DAYS, DAILY PERFORMANCE & EARNINGS ────────────────────────
+        daily_history = []
+        monthly_map = {}
+        location_map = {}
+        partner_map = {}
+
+        tot_photos = 0
+        tot_gross_earnings = 0.0
+
+        if is_seller:
+            ops_qs = SellerDailyOperation.objects.filter(
+                seller=employee,
+                work_day__date__range=(s_date, e_date),
+                work_day__status__in=cls.VALID_STATUSES,
+            ).select_related('work_day', 'work_day__location').order_by('-work_day__date')
+
+            if location_id:
+                ops_qs = ops_qs.filter(work_day__location_id=location_id)
+
+            for op in ops_qs:
+                wd = op.work_day
+                d_str = wd.date.strftime('%Y-%m-%d')
+                m_str = wd.date.strftime('%Y-%m')
+                loc = wd.location
+                loc_id_str = str(loc.id)
+
+                gross = float(op.amount)
+                tot_gross_earnings += gross
+
+                d_bonus = daily_bonuses.get(d_str, 0.0)
+                d_deduct = daily_deductions.get(d_str, 0.0)
+                d_adv = daily_advances.get(d_str, 0.0)
+                d_net = max(0.0, round(gross + d_bonus - d_deduct - d_adv, 2))
+
+                daily_history.append({
+                    'work_day_id': str(wd.id),
+                    'date': d_str,
+                    'location_id': loc_id_str,
+                    'location_name': loc.name,
+                    'location_color': loc.color_hex or '#1565C0',
+                    'partner_id': None,
+                    'partner_name': None,
+                    'partner_role': None,
+                    'photos': 0,
+                    'unit_price': 0.0,
+                    'gross_earnings': gross,
+                    'bonuses': d_bonus,
+                    'deductions': d_deduct,
+                    'advances': d_adv,
+                    'net_earnings': d_net,
+                })
+
+                if m_str not in monthly_map:
+                    monthly_map[m_str] = {'month': m_str, 'photos': 0, 'earnings': 0.0, 'days': 0}
+                monthly_map[m_str]['earnings'] += gross
+                monthly_map[m_str]['days'] += 1
+
+                if loc_id_str not in location_map:
+                    location_map[loc_id_str] = {
+                        'location_id': loc_id_str,
+                        'location_name': loc.name,
+                        'location_color': loc.color_hex or '#1565C0',
+                        'days': 0,
+                        'total_photos': 0,
+                        'total_earnings': 0.0,
+                        'best_day_photos': 0,
+                        'best_day_earnings': 0.0,
+                    }
+                location_map[loc_id_str]['days'] += 1
+                location_map[loc_id_str]['total_earnings'] += gross
+                if gross > location_map[loc_id_str]['best_day_earnings']:
+                    location_map[loc_id_str]['best_day_earnings'] = gross
+
+        else:
+            perfs_qs = DailyEmployeePerformance.objects.filter(
+                employee=employee,
+                work_day__date__range=(s_date, e_date),
+                work_day__status__in=cls.VALID_STATUSES,
+            ).select_related(
+                'work_day',
+                'work_day__location',
+                'team',
+                'team__photographer',
+                'team__clown',
+            ).order_by('-work_day__date')
+
+            if location_id:
+                perfs_qs = perfs_qs.filter(work_day__location_id=location_id)
+
+            for perf in perfs_qs:
+                wd = perf.work_day
+                d_str = wd.date.strftime('%Y-%m-%d')
+                m_str = wd.date.strftime('%Y-%m')
+                loc = wd.location
+                loc_id_str = str(loc.id)
+
+                photos = perf.photo_count
+                tot_photos += photos
+
+                prices = wd.get_resolved_unit_prices(photo_count=photos)
+                unit_price = float(
+                    prices['photographer_unit_price']
+                    if employee.role == 'photographer'
+                    else prices['clown_unit_price']
+                )
+                gross = round(photos * unit_price, 2)
+                tot_gross_earnings += gross
+
+                partner_emp = (
+                    perf.team.clown if employee.role == 'photographer' else perf.team.photographer
+                ) if perf.team else None
+
+                p_id_str = str(partner_emp.id) if partner_emp else None
+                p_name = f"{partner_emp.first_name} {partner_emp.last_name}" if partner_emp else None
+                p_role = partner_emp.role if partner_emp else None
+                p_avatar = partner_emp.avatar.url if (partner_emp and partner_emp.avatar) else None
+
+                d_bonus = daily_bonuses.get(d_str, 0.0)
+                d_deduct = daily_deductions.get(d_str, 0.0)
+                d_adv = daily_advances.get(d_str, 0.0)
+                d_net = max(0.0, round(gross + d_bonus - d_deduct - d_adv, 2))
+
+                daily_history.append({
+                    'work_day_id': str(wd.id),
+                    'date': d_str,
+                    'location_id': loc_id_str,
+                    'location_name': loc.name,
+                    'location_color': loc.color_hex or '#1565C0',
+                    'partner_id': p_id_str,
+                    'partner_name': p_name,
+                    'partner_role': p_role,
+                    'partner_avatar': p_avatar,
+                    'photos': photos,
+                    'unit_price': unit_price,
+                    'gross_earnings': gross,
+                    'bonuses': d_bonus,
+                    'deductions': d_deduct,
+                    'advances': d_adv,
+                    'net_earnings': d_net,
+                })
+
+                if m_str not in monthly_map:
+                    monthly_map[m_str] = {'month': m_str, 'photos': 0, 'earnings': 0.0, 'days': 0}
+                monthly_map[m_str]['photos'] += photos
+                monthly_map[m_str]['earnings'] += gross
+                monthly_map[m_str]['days'] += 1
+
+                if loc_id_str not in location_map:
+                    location_map[loc_id_str] = {
+                        'location_id': loc_id_str,
+                        'location_name': loc.name,
+                        'location_color': loc.color_hex or '#1565C0',
+                        'days': 0,
+                        'total_photos': 0,
+                        'total_earnings': 0.0,
+                        'best_day_photos': 0,
+                        'best_day_earnings': 0.0,
+                    }
+                location_map[loc_id_str]['days'] += 1
+                location_map[loc_id_str]['total_photos'] += photos
+                location_map[loc_id_str]['total_earnings'] += gross
+                if photos > location_map[loc_id_str]['best_day_photos']:
+                    location_map[loc_id_str]['best_day_photos'] = photos
+                if gross > location_map[loc_id_str]['best_day_earnings']:
+                    location_map[loc_id_str]['best_day_earnings'] = gross
+
+                if p_id_str:
+                    if p_id_str not in partner_map:
+                        partner_map[p_id_str] = {
+                            'employee_id': p_id_str,
+                            'name': p_name,
+                            'role': p_role,
+                            'avatar': p_avatar,
+                            'days_together': 0,
+                            'total_photos': 0,
+                            'best_day': 0,
+                            'worst_day': 999999,
+                        }
+                    partner_map[p_id_str]['days_together'] += 1
+                    partner_map[p_id_str]['total_photos'] += photos
+                    if photos > partner_map[p_id_str]['best_day']:
+                        partner_map[p_id_str]['best_day'] = photos
+                    if photos < partner_map[p_id_str]['worst_day']:
+                        partner_map[p_id_str]['worst_day'] = photos
+
+        days_worked = len(daily_history)
+        tot_net_earnings = max(0.0, round(tot_gross_earnings + tot_bonuses - tot_deductions - tot_advances, 2))
+        avg_photos_per_day = round(tot_photos / max(1, days_worked), 1) if days_worked > 0 else 0.0
+        avg_earnings_per_day = round(tot_net_earnings / max(1, days_worked), 2) if days_worked > 0 else 0.0
+
+        history_chronological = sorted(daily_history, key=lambda h: h['date'])
+
+        # ── 4. KPI HIGHLIGHTS ──────────────────────────────────────────────────
+        best_photo_day = max(daily_history, key=lambda h: h['photos']) if daily_history else None
+        worst_photo_day = min(daily_history, key=lambda h: h['photos']) if daily_history else None
+        best_earning_day = max(daily_history, key=lambda h: h['gross_earnings']) if daily_history else None
+        worst_earning_day = min(daily_history, key=lambda h: h['gross_earnings']) if daily_history else None
+
+        best_loc_item = max(location_map.values(), key=lambda l: l['total_photos'] if not is_seller else l['total_earnings']) if location_map else None
+
+        partners_list = []
+        for p in partner_map.values():
+            if p['worst_day'] == 999999:
+                p['worst_day'] = 0
+            p['average_photos'] = round(p['total_photos'] / max(1, p['days_together']), 1)
+            p['percentage'] = round((p['days_together'] / max(1, days_worked)) * 100, 1)
+            partners_list.append(p)
+
+        partners_list.sort(key=lambda p: (-p['total_photos'], -p['days_together']))
+        top_partner = partners_list[0] if partners_list else None
+
+        best_partnership = {
+            'partner_name': top_partner['name'] if top_partner else 'N/A',
+            'partner_role': top_partner['role'] if top_partner else '',
+            'partner_avatar': top_partner['avatar'] if top_partner else None,
+            'days_together': top_partner['days_together'] if top_partner else 0,
+            'total_photos': top_partner['total_photos'] if top_partner else 0,
+            'photos_per_day': top_partner['average_photos'] if top_partner else 0.0,
+            'title': f"{employee.first_name} × {top_partner['name'].split()[0]}" if top_partner else "No Partner Recorded",
+        } if not is_seller else None
+
+        most_frequent_teammate = {
+            'name': top_partner['name'],
+            'days_together': top_partner['days_together'],
+            'total_photos': top_partner['total_photos'],
+        } if top_partner else None
+
+        # ── 5. LOCATION BREAKDOWN LIST ────────────────────────────────────────
+        locations_list = []
+        for l in location_map.values():
+            l['average_per_day'] = round((l['total_photos'] if not is_seller else l['total_earnings']) / max(1, l['days']), 1)
+            l['earnings_per_day'] = round(l['total_earnings'] / max(1, l['days']), 2)
+            locations_list.append(l)
+        locations_list.sort(key=lambda l: -l['total_earnings'])
+
+        # ── 6. ALL-TIME & TREND PERFORMANCE CALCULATIONS ─────────────────────
+        timeline_values = [h['photos'] if not is_seller else h['gross_earnings'] for h in history_chronological]
+        consistency_data = cls._calculate_consistency(timeline_values)
+
+        if len(timeline_values) >= 2:
+            mid = len(timeline_values) // 2
+            first_half = timeline_values[:mid]
+            second_half = timeline_values[mid:]
+            avg_first = sum(first_half) / max(1, len(first_half))
+            avg_second = sum(second_half) / max(1, len(second_half))
+            growth_pct = round(((avg_second - avg_first) / max(0.1, avg_first)) * 100, 1) if avg_first > 0 else 0.0
+
+            if growth_pct >= 5.0:
+                trend_dir = 'improving'
+                trend_label = '↗ Improving'
+            elif growth_pct <= -5.0:
+                trend_dir = 'declining'
+                trend_label = '↘ Declining'
+            else:
+                trend_dir = 'stable'
+                trend_label = '→ Stable'
+        else:
+            growth_pct = 0.0
+            trend_dir = 'stable'
+            trend_label = '→ Stable'
+
+        # ── 7. MONTHLY PRODUCTION CHART DATA ─────────────────────────────────
+        monthly_list = [
+            {
+                'month': k,
+                'month_name': k,
+                'photos': v['photos'],
+                'earnings': round(v['earnings'], 2),
+                'days': v['days'],
+            }
+            for k, v in sorted(monthly_map.items())
+        ]
+
+        # ── 8. COMPARISON WITH ANOTHER EMPLOYEE ──────────────────────────────
+        comparison_target = None
+        if compare_to_id and str(compare_to_id) != str(employee_id):
+            target_emp = Employee.objects.filter(id=compare_to_id).first()
+            if target_emp:
+                target_stats = cls.get_admin_employee_profile(
+                    compare_to_id,
+                    time_filter=time_filter,
+                    location_id=location_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                if 'error' not in target_stats:
+                    t_overview = target_stats['overview']
+                    t_fin = target_stats['financial']
+                    comparison_target = {
+                        'employee_1': {
+                            'id': str(employee.id),
+                            'name': f"{employee.first_name} {employee.last_name}",
+                            'role': employee.role,
+                            'avatar': emp_info['avatar'],
+                            'photos': tot_photos,
+                            'avg_photos': avg_photos_per_day,
+                            'gross_earnings': tot_gross_earnings,
+                            'net_earnings': tot_net_earnings,
+                            'attendance_rate': att_rate,
+                            'best_day': best_photo_day['photos'] if best_photo_day else 0,
+                            'work_days': days_worked,
+                        },
+                        'employee_2': {
+                            'id': str(target_emp.id),
+                            'name': f"{target_emp.first_name} {target_emp.last_name}",
+                            'role': target_emp.role,
+                            'avatar': target_emp.avatar.url if target_emp.avatar else None,
+                            'photos': t_overview['work_stats']['total_photos'],
+                            'avg_photos': t_overview['work_stats']['average_photos_per_day'],
+                            'gross_earnings': t_fin['gross'],
+                            'net_earnings': t_fin['net'],
+                            'attendance_rate': target_stats['attendance']['summary']['attendance_percentage'],
+                            'best_day': t_overview['work_stats']['best_day']['photos'] if t_overview['work_stats']['best_day'] else 0,
+                            'work_days': t_overview['work_stats']['total_work_days'],
+                        }
+                    }
+
+        result = {
+            'has_data': days_worked > 0,
+            'employee': emp_info,
+            'overview': {
+                'work_stats': {
+                    'total_work_days': days_worked,
+                    'total_photos': tot_photos,
+                    'average_photos_per_day': avg_photos_per_day,
+                    'best_day': {
+                        'date': best_photo_day['date'],
+                        'photos': best_photo_day['photos'],
+                        'location': best_photo_day['location_name'],
+                    } if best_photo_day else None,
+                    'worst_day': {
+                        'date': worst_photo_day['date'],
+                        'photos': worst_photo_day['photos'],
+                        'location': worst_photo_day['location_name'],
+                    } if worst_photo_day else None,
+                    'best_location': {
+                        'name': best_loc_item['location_name'],
+                        'photos': best_loc_item['total_photos'],
+                        'earnings': best_loc_item['total_earnings'],
+                    } if best_loc_item else None,
+                    'most_frequent_teammate': most_frequent_teammate,
+                    'total_teams_worked_with': len(partner_map),
+                },
+                'financial_stats': {
+                    'gross_earnings': tot_gross_earnings,
+                    'bonuses': tot_bonuses,
+                    'deductions': tot_deductions,
+                    'advances': tot_advances,
+                    'net_earnings': tot_net_earnings,
+                    'average_earnings_per_day': avg_earnings_per_day,
+                    'best_earning_day': {
+                        'date': best_earning_day['date'],
+                        'amount': best_earning_day['gross_earnings'],
+                    } if best_earning_day else None,
+                    'worst_earning_day': {
+                        'date': worst_earning_day['date'],
+                        'amount': worst_earning_day['gross_earnings'],
+                    } if worst_earning_day else None,
+                },
+                'attendance_stats': {
+                    'days_present': att_pres,
+                    'days_absent': att_absent,
+                    'late_days': att_late,
+                    'total_days_recorded': att_tot,
+                    'attendance_percentage': att_rate,
+                },
+            },
+            'financial': {
+                'gross': tot_gross_earnings,
+                'bonuses': tot_bonuses,
+                'deductions': tot_deductions,
+                'advances': tot_advances,
+                'net': tot_net_earnings,
+                'avg_per_day': avg_earnings_per_day,
+            },
+            'attendance': {
+                'summary': {
+                    'days_present': att_pres,
+                    'days_absent': att_absent,
+                    'late_days': att_late,
+                    'total_days_recorded': att_tot,
+                    'attendance_percentage': att_rate,
+                },
+                'calendar': attendance_calendar,
+            },
+            'trend': {
+                'direction': trend_dir,
+                'label': trend_label,
+                'growth_percent': growth_pct,
+                'consistency_score': consistency_data['consistency_score'],
+                'consistency_label': consistency_data['consistency_label'],
+            },
+            'partners': partners_list,
+            'best_partnership': best_partnership,
+            'locations': locations_list,
+            'monthly_production': monthly_list,
+            'charts': {
+                'daily_timeline': [
+                    {
+                        'date': h['date'],
+                        'photos': h['photos'],
+                        'gross_earnings': h['gross_earnings'],
+                        'net_earnings': h['net_earnings'],
+                        'location_name': h['location_name'],
+                        'partner_name': h['partner_name'],
+                    }
+                    for h in history_chronological
+                ],
+            },
+            'history': daily_history,
+            'comparison': comparison_target,
+            'period': {
+                'start': s_date.strftime('%Y-%m-%d'),
+                'end': e_date.strftime('%Y-%m-%d'),
+                'time_filter': time_filter,
+            },
+        }
 
         try:
             cache.set(cache_key, result, CACHE_TIMEOUT)

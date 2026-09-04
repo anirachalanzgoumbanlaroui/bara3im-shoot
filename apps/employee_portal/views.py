@@ -111,8 +111,7 @@ class EmployeeDashboardViewSet(viewsets.ViewSet):
             work_day = perf.work_day
             team = perf.team
             location = work_day.location
-            res = work_day.get_resolved_unit_prices(photo_count=perf.photo_count)
-            unit_price = res['photographer_unit_price'] if employee.role == 'photographer' else res['clown_unit_price']
+            unit_price = work_day.calculate_employee_unit_price(employee.role, perf.photo_count)
             earnings = float(perf.photo_count * unit_price)
             
             data.append({

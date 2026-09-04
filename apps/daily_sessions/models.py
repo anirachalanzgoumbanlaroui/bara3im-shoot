@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 from django.db import models
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -150,7 +151,36 @@ class WorkDay(models.Model):
         if self.override_clown_price is not None and self.override_clown_price < 0:
             raise ValidationError("Override price cannot be negative.")
 
-    def get_resolved_unit_prices(self, photo_count=None):
+    @property
+    def total_photos(self) -> int:
+        """
+        Total Work Day photos = SUM(all clown photo counts).
+        Clown photo counts are the single source of truth for total Work Day photos.
+        Photographer photo counts are not included in this total.
+        """
+        if not self.pk:
+            return 0
+        clown_perfs = DailyEmployeePerformance.objects.filter(
+            work_day=self, employee__role='clown'
+        )
+        total = clown_perfs.aggregate(total=models.Sum('photo_count'))['total']
+        if total is not None:
+            return total
+        return sum(t.team_photo_count for t in self.teams.all())
+
+    def calculate_employee_unit_price(self, role: str, photo_count: int = 0) -> Decimal:
+        """
+        Calculates unit price for a specific employee role and photo count.
+        Never uses global workday total photos for individual pricing decisions.
+        """
+        resolved = self.get_resolved_unit_prices(photo_count=photo_count)
+        if role == 'photographer':
+            return Decimal(str(resolved['photographer_unit_price']))
+        elif role == 'clown':
+            return Decimal(str(resolved['clown_unit_price']))
+        return Decimal('0.00')
+
+    def get_resolved_unit_prices(self, photo_count=0):
         """
         Calculates applicable unit prices based on dynamic pricing state, thresholds, photo count, and tier activation.
         Exact boundary rules:
@@ -175,19 +205,12 @@ class WorkDay(models.Model):
             }
 
         if photo_count is None:
-            if self.pk:
-                try:
-                    aggr = self.teams.aggregate(total=models.Sum('team_photo_count'))['total']
-                    photo_count = aggr if aggr is not None else 0
-                except Exception:
-                    photo_count = sum(t.team_photo_count for t in self.teams.all())
-            else:
-                photo_count = sum(t.team_photo_count for t in self.teams.all())
+            photo_count = 0
 
         target_tier = 'normal'
         if photo_count < self.low_photo_threshold:
             target_tier = 'low'
-        elif photo_count >= self.high_photo_threshold:
+        elif photo_count > self.high_photo_threshold:
             target_tier = 'high'
 
         # Check activation status with fallback

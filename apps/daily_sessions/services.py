@@ -9,13 +9,10 @@ class DailyOperationsService:
 
     @staticmethod
     def calculate_employee_earnings(performance: DailyEmployeePerformance) -> Decimal:
-        resolved = performance.work_day.get_resolved_unit_prices()
-        if performance.employee.role == 'photographer':
-            unit_price = resolved['photographer_unit_price']
-        elif performance.employee.role == 'clown':
-            unit_price = resolved['clown_unit_price']
-        else:
-            unit_price = Decimal('0.00')
+        unit_price = performance.work_day.calculate_employee_unit_price(
+            role=performance.employee.role,
+            photo_count=performance.photo_count
+        )
         return Decimal(performance.photo_count) * unit_price
 
     @staticmethod
@@ -190,7 +187,7 @@ class DailyOperationsService:
         seller_ops = work_day.seller_operations.all()
         performances = work_day.performances.all()
 
-        total_photos = sum(t.team_photo_count for t in teams)
+        total_photos = work_day.total_photos
         resolved = work_day.get_resolved_unit_prices(photo_count=total_photos)
 
         photographer_earnings = Decimal('0.00')
