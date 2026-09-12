@@ -3,8 +3,10 @@ API views for the Advanced Excel Export Center in Bara3im Shoot.
 Handles authentication, permission checks, query parameter parsing, and streams openpyxl Excel workbooks.
 """
 
+import uuid
 from datetime import datetime, date
 from django.shortcuts import get_object_or_404
+from django.db import models
 from rest_framework import permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -79,7 +81,18 @@ class EmployeeExcelExportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, employee_id):
-        employee = get_object_or_404(Employee, pk=employee_id)
+        # Flexible lookup: UUID, user__id, or employee_code
+        employee = None
+        try:
+            val = uuid.UUID(str(employee_id))
+            employee = Employee.objects.filter(
+                models.Q(id=val) | models.Q(user__id=val) | models.Q(employee_code=str(employee_id))
+            ).first()
+        except ValueError:
+            employee = Employee.objects.filter(employee_code=str(employee_id)).first()
+
+        if not employee:
+            return Response({'detail': f'Employee with ID or code "{employee_id}" not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         # Permission check: Admin can export anyone. Employee can export only self if linked.
         user = request.user
@@ -116,7 +129,11 @@ class DailyWorkDayExcelExportView(APIView):
 
     def get(self, request, workday_id=None):
         if workday_id:
-            work_day = get_object_or_404(WorkDay, pk=workday_id)
+            try:
+                val = uuid.UUID(str(workday_id))
+                work_day = get_object_or_404(WorkDay, pk=val)
+            except ValueError:
+                work_day = get_object_or_404(WorkDay, pk=workday_id)
         else:
             date_str = request.query_params.get('date')
             location_id = request.query_params.get('location_id') or request.query_params.get('location')
