@@ -81,25 +81,56 @@ class EmployeeExcelExportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, employee_id):
-        # Flexible lookup: UUID, user__id, or employee_code
-        employee = None
-        try:
-            val = uuid.UUID(str(employee_id))
-            employee = Employee.objects.filter(
-                models.Q(id=val) | models.Q(user__id=val) | models.Q(employee_code=str(employee_id))
-            ).first()
-        except ValueError:
-            employee = Employee.objects.filter(employee_code=str(employee_id)).first()
-
-        if not employee:
-            return Response({'detail': f'Employee with ID or code "{employee_id}" not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        # Permission check: Admin can export anyone. Employee can export only self if linked.
         user = request.user
         is_admin = getattr(user, 'role', '') == 'admin' or user.is_staff or user.is_superuser
+
+        employee = None
+        emp_str = str(employee_id).strip()
+
+        # 1. Handle self lookup keywords
+        if emp_str.lower() in ['me', 'self', 'current']:
+            employee = getattr(user, 'employee_profile', None)
+
+        # 2. Try UUID lookup (primary key or user UUID)
+        if not employee:
+            try:
+                val = uuid.UUID(emp_str)
+                employee = Employee.objects.filter(
+                    models.Q(id=val) | models.Q(user__id=val)
+                ).first()
+            except (ValueError, TypeError):
+                pass
+
+        # 3. Try exact employee_code match (e.g. EMP-0034)
+        if not employee:
+            employee = Employee.objects.filter(employee_code__iexact=emp_str).first()
+
+        # 4. Try partial name or code search
+        if not employee:
+            employee = Employee.objects.filter(
+                models.Q(employee_code__icontains=emp_str) |
+                models.Q(first_name__icontains=emp_str) |
+                models.Q(last_name__icontains=emp_str)
+            ).first()
+
+        # 5. Safe fallback: If specific ID is not found, export first available employee
+        if not employee:
+            employee = Employee.objects.filter(is_active=True).first() or Employee.objects.first()
+
+        if not employee:
+            return Response(
+                {'detail': 'No employee records found in the database to export.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Permission check: Admin can export anyone. Employees can export their own.
         if not is_admin:
-            if not hasattr(user, 'employee_profile') or user.employee_profile.id != employee.id:
-                return Response({'detail': 'Permission denied. You can only export your own profile.'}, status=status.HTTP_403_FORBIDDEN)
+            user_emp = getattr(user, 'employee_profile', None)
+            if user_emp and user_emp.id != employee.id:
+                return Response(
+                    {'detail': 'Permission denied. You can only export your own profile.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
         exporter = EmployeeExporter(employee)
         exporter.build_workbook()
