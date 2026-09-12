@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'apps.notifications',
     'apps.employee_portal',
     'apps.statistics',
+    'apps.exports',
 ]
 
 MIDDLEWARE = [

@@ -15,4 +15,5 @@ urlpatterns = [
     path('api/notifications/', include('apps.notifications.urls')),
     path('api/employee-portal/', include('apps.employee_portal.urls')),
     path('api/', include('apps.statistics.urls')),
+    path('api/exports/', include('apps.exports.urls')),
 ]
