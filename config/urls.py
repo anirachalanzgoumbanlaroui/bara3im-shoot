@@ -16,4 +16,5 @@ urlpatterns = [
     path('api/employee-portal/', include('apps.employee_portal.urls')),
     path('api/', include('apps.statistics.urls')),
     path('api/exports/', include('apps.exports.urls')),
+    path('exports/', include('apps.exports.urls')),
 ]
