@@ -10,12 +10,14 @@ User = get_user_model()
 class DynamicPricingTestCase(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='testadmin', password='password')
+        self.u_photo = User.objects.create_user(username='testphoto', password='password', role='photographer')
+        self.u_clown = User.objects.create_user(username='testclown', password='password', role='clown')
         self.location = Location.objects.create(name='Test Location', icon='stadium', color_hex='#FF5722')
         self.photographer = Employee.objects.create(
-            first_name='Photo', last_name='Grapher', role='photographer', national_id='10101'
+            user=self.u_photo, first_name='Photo', last_name='Grapher', role='photographer', hiring_date='2026-01-01'
         )
         self.clown = Employee.objects.create(
-            first_name='Fun', last_name='Clown', role='clown', national_id='20202'
+            user=self.u_clown, first_name='Fun', last_name='Clown', role='clown', hiring_date='2026-01-01'
         )
 
     def test_default_pricing_values(self):
@@ -61,13 +63,21 @@ class DynamicPricingTestCase(TestCase):
         self.assertEqual(res_norm_40['photographer_unit_price'], Decimal('45.00'))
         self.assertEqual(res_norm_40['clown_unit_price'], Decimal('50.00'))
 
-        # Boundary test 3: 80 photos (<= 80) -> Normal Volume
-        res_norm_80 = work_day.get_resolved_unit_prices(photo_count=80)
-        self.assertEqual(res_norm_80['tier'], 'normal')
-        self.assertEqual(res_norm_80['photographer_unit_price'], Decimal('45.00'))
-        self.assertEqual(res_norm_80['clown_unit_price'], Decimal('50.00'))
+        # Boundary test 3: 79 photos (< 80) -> Normal Volume
+        res_norm_79 = work_day.get_resolved_unit_prices(photo_count=79)
+        self.assertEqual(res_norm_79['tier'], 'normal')
+        self.assertEqual(res_norm_79['photographer_unit_price'], Decimal('45.00'))
+        self.assertEqual(res_norm_79['clown_unit_price'], Decimal('50.00'))
 
-        # Boundary test 4: 81 photos (> 80) -> High Volume
+        # Boundary test 4: 80 photos (>= 80) -> High Volume
+        res_high_80 = work_day.get_resolved_unit_prices(photo_count=80)
+        self.assertEqual(res_high_80['tier'], 'high')
+        self.assertEqual(res_high_80['photographer_unit_price'], Decimal('50.00'))
+        self.assertEqual(res_high_80['clown_unit_price'], Decimal('55.00'))
+        self.assertEqual(work_day.calculate_employee_unit_price('photographer', 80), Decimal('50.00'))
+        self.assertEqual(work_day.calculate_employee_unit_price('clown', 80), Decimal('55.00'))
+
+        # Boundary test 5: 81 photos (> 80) -> High Volume
         res_high = work_day.get_resolved_unit_prices(photo_count=81)
         self.assertEqual(res_high['tier'], 'high')
         self.assertEqual(res_high['photographer_unit_price'], Decimal('50.00'))

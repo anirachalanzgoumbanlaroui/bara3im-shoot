@@ -47,7 +47,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'username', 'employee_code', 'first_name', 'last_name',
             'phone_number', 'address', 'date_of_birth', 'hiring_date',
-            'role', 'status', 'is_active', 'avatar', 'notes',
+            'role', 'status', 'is_active', 'avatar', 'statistics_color', 'notes',
             'fingerprint_registered', 'fingerprint_template_id', 'fingerprint_registered_at',
             'face_registered', 'face_registered_at', 'face_last_updated',
             'password_configured', 'password_changed_at',
@@ -61,6 +61,15 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'password_configured', 'password_changed_at',
             'created_at', 'updated_at'
         ]
+
+    def validate_statistics_color(self, value):
+        """
+        Validate statistics color format (#RRGGBB).
+        """
+        if value:
+            if not re.match(r'^#[0-9a-fA-F]{6}$', value):
+                raise serializers.ValidationError("Statistics color must be a valid hex color format like #2196F3.")
+        return value
 
     def validate_phone_number(self, value):
         """
@@ -141,5 +150,5 @@ class EmployeeListSerializer(serializers.ModelSerializer):
         model = Employee
         fields = [
             'id', 'employee_code', 'first_name', 'last_name',
-            'role', 'status', 'is_active', 'avatar', 'phone_number', 'hiring_date', 'fingerprint_registered', 'face_registered'
+            'role', 'status', 'is_active', 'avatar', 'statistics_color', 'phone_number', 'hiring_date', 'fingerprint_registered', 'face_registered'
         ]

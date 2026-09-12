@@ -77,11 +77,11 @@ class WorkDay(models.Model):
     )
     high_photographer_price = models.DecimalField(
         max_digits=10, decimal_places=2, default=50,
-        help_text="Photographer unit price when total photos > high_photo_threshold."
+        help_text="Photographer unit price when total photos >= high_photo_threshold."
     )
     high_clown_price = models.DecimalField(
         max_digits=10, decimal_places=2, default=55,
-        help_text="Clown unit price when total photos > high_photo_threshold."
+        help_text="Clown unit price when total photos >= high_photo_threshold."
     )
     low_tier_active = models.BooleanField(
         default=True,
@@ -185,8 +185,8 @@ class WorkDay(models.Model):
         Calculates applicable unit prices based on dynamic pricing state, thresholds, photo count, and tier activation.
         Exact boundary rules:
         - 0–39 photos (< low_photo_threshold 40): Low pricing (if active)
-        - 40–80 photos (low_photo_threshold 40 <= photos <= high_photo_threshold 80): Normal pricing (if active)
-        - 81+ photos (> high_photo_threshold 80): High pricing (if active)
+        - 40–79 photos (low_photo_threshold 40 <= photos < high_photo_threshold 80): Normal pricing (if active)
+        - 80+ photos (photos >= high_photo_threshold 80): High pricing (if active)
         """
         if self.is_manually_overridden and self.override_photographer_price is not None and self.override_clown_price is not None:
             return {
@@ -210,7 +210,7 @@ class WorkDay(models.Model):
         target_tier = 'normal'
         if photo_count < self.low_photo_threshold:
             target_tier = 'low'
-        elif photo_count > self.high_photo_threshold:
+        elif photo_count >= self.high_photo_threshold:
             target_tier = 'high'
 
         # Check activation status with fallback

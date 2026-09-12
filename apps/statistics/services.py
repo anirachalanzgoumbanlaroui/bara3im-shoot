@@ -338,6 +338,7 @@ class StatisticsService:
                 'employee_code': emp.employee_code or str(emp.id)[:8],
                 'avatar': emp.avatar.url if emp.avatar else None,
                 'role': emp.role,
+                'statistics_color': cls._get_stable_employee_color(emp),
                 'score': prod_score,
                 'productivity_score': prod_score,
                 'total_pictures': tot_pics,
@@ -530,6 +531,7 @@ class StatisticsService:
                 'name': f"{seller.first_name} {seller.last_name}",
                 'employee_code': seller.employee_code or str(seller.id)[:8],
                 'avatar': seller.avatar.url if seller.avatar else None,
+                'statistics_color': cls._get_stable_employee_color(seller),
                 'score': consistency_score,
                 'total_revenue': tot_rev,
                 'work_days_count': cnt,
@@ -1479,6 +1481,75 @@ class StatisticsService:
         }
 
     # --------------------------------------------------------------------------
+    # GAP-FILLED TIMELINE GENERATOR (No Infinite Zeros, Strictly Bounded)
+    # --------------------------------------------------------------------------
+    @staticmethod
+    def _generate_gap_filled_timeline(daily_data_map, value_key='photos'):
+        """
+        Generates a chronological timeline strictly bounded between the employee's
+        earliest worked date and latest worked date within the filtered scope.
+        - Days worked: actual photos / earnings, worked = True
+        - Missing days between first and last worked day: 0, worked = False
+        - Never generates infinite zeros before first_work_date or after last_work_date.
+        - If no work records exist, returns [].
+        """
+        if not daily_data_map:
+            return []
+
+        parsed_entries = {}
+        for k, v in daily_data_map.items():
+            if isinstance(k, str):
+                try:
+                    d_obj = datetime.strptime(k, '%Y-%m-%d').date()
+                except Exception:
+                    continue
+            else:
+                d_obj = k
+            parsed_entries[d_obj] = v
+
+        if not parsed_entries:
+            return []
+
+        sorted_dates = sorted(parsed_entries.keys())
+        first_date = sorted_dates[0]
+        last_date = sorted_dates[-1]
+
+        timeline = []
+        curr = first_date
+        one_day = timedelta(days=1)
+
+        while curr <= last_date:
+            d_str = curr.strftime('%Y-%m-%d')
+            if curr in parsed_entries:
+                record = parsed_entries[curr]
+                val = record if isinstance(record, (int, float)) else record.get(value_key, 0)
+                timeline_entry = {
+                    'date': d_str,
+                    'photos': val,
+                    'pictures': val,
+                    'worked': True,
+                }
+                if isinstance(record, dict):
+                    for extra_k in ('gross_earnings', 'net_earnings', 'location_name', 'partner_name'):
+                        if extra_k in record:
+                            timeline_entry[extra_k] = record[extra_k]
+                timeline.append(timeline_entry)
+            else:
+                timeline.append({
+                    'date': d_str,
+                    'photos': 0,
+                    'pictures': 0,
+                    'worked': False,
+                    'gross_earnings': 0.0,
+                    'net_earnings': 0.0,
+                    'location_name': '',
+                    'partner_name': None,
+                })
+            curr += one_day
+
+        return timeline
+
+    # --------------------------------------------------------------------------
     # EMPLOYEE ANALYTICS (Full — 8 Graphs)
     # --------------------------------------------------------------------------
     @classmethod
@@ -1508,6 +1579,7 @@ class StatisticsService:
             'role': employee.role,
             'employee_code': employee.employee_code,
             'avatar': employee.avatar.url if employee.avatar else None,
+            'statistics_color': cls._get_stable_employee_color(employee),
             'hiring_date': employee.hiring_date.strftime('%Y-%m-%d') if employee.hiring_date else None,
         }
 
@@ -1531,14 +1603,14 @@ class StatisticsService:
             total_rev = float(agg['total'])
             avg_per_day = round(total_rev / max(1, days_worked), 2) if days_worked > 0 else 0.0
 
-            timeline = [
-                {'date': item['work_day__date'].strftime('%Y-%m-%d'), 'photos': round(float(item['day_total']), 2)}
+            seller_daily_map = {
+                item['work_day__date']: round(float(item['day_total']), 2)
                 for item in ops_qs.values('work_day__date').annotate(
                     day_total=Coalesce(Sum('amount'), 0, output_field=FloatField())
-                ).order_by('work_day__date')
-            ]
-
-            consistency_data = cls._calculate_consistency([t['photos'] for t in timeline])
+                )
+            }
+            timeline = cls._generate_gap_filled_timeline(seller_daily_map, value_key='photos')
+            consistency_data = cls._calculate_consistency(list(seller_daily_map.values()))
 
             loc_data = [
                 {
@@ -1604,6 +1676,7 @@ class StatisticsService:
                     **consistency_data,
                 },
                 'timeline': timeline,
+                'picture_history': timeline,
                 'partners': [],
                 'locations': loc_data,
                 'comparison': {
@@ -1649,15 +1722,14 @@ class StatisticsService:
             worst_day_count = agg['mn']
             avg_per_day = round(total_photos / max(1, days_worked), 1) if days_worked > 0 else 0.0
 
-            # Timeline — single DB query
-            timeline = [
-                {'date': item['work_day__date'].strftime('%Y-%m-%d'), 'photos': item['photos']}
+            photo_daily_map = {
+                item['work_day__date']: item['photos']
                 for item in perfs_qs.values('work_day__date').annotate(
                     photos=Coalesce(Sum('photo_count'), 0)
-                ).order_by('work_day__date')
-            ]
-
-            consistency_data = cls._calculate_consistency([t['photos'] for t in timeline])
+                )
+            }
+            timeline = cls._generate_gap_filled_timeline(photo_daily_map, value_key='photos')
+            consistency_data = cls._calculate_consistency(list(photo_daily_map.values()))
 
             # Partners — single annotated query per role
             partners = []
@@ -1777,6 +1849,7 @@ class StatisticsService:
                     **consistency_data,
                 },
                 'timeline': timeline,
+                'picture_history': timeline,
                 'partners': partners,
                 'locations': locations,
                 'comparison': {
@@ -1846,6 +1919,7 @@ class StatisticsService:
             'role': employee.role,
             'employee_code': employee.employee_code,
             'avatar': employee.avatar.url if employee.avatar else None,
+            'statistics_color': cls._get_stable_employee_color(employee),
             'hiring_date': employee.hiring_date.strftime('%Y-%m-%d') if employee.hiring_date else None,
             'status': employee.status,
             'is_active': employee.is_active,
@@ -2084,6 +2158,11 @@ class StatisticsService:
         avg_earnings_per_day = round(tot_net_earnings / max(1, days_worked), 2) if days_worked > 0 else 0.0
 
         history_chronological = sorted(daily_history, key=lambda h: h['date'])
+        daily_history_by_date = {h['date']: h for h in history_chronological}
+        daily_timeline = cls._generate_gap_filled_timeline(
+            daily_history_by_date,
+            value_key='photos' if not is_seller else 'gross_earnings'
+        )
 
         # ── 4. KPI HIGHLIGHTS ──────────────────────────────────────────────────
         best_photo_day = max(daily_history, key=lambda h: h['photos']) if daily_history else None
@@ -2290,18 +2369,10 @@ class StatisticsService:
             'locations': locations_list,
             'monthly_production': monthly_list,
             'charts': {
-                'daily_timeline': [
-                    {
-                        'date': h['date'],
-                        'photos': h['photos'],
-                        'gross_earnings': h['gross_earnings'],
-                        'net_earnings': h['net_earnings'],
-                        'location_name': h['location_name'],
-                        'partner_name': h['partner_name'],
-                    }
-                    for h in history_chronological
-                ],
+                'daily_timeline': daily_timeline,
             },
+            'timeline': daily_timeline,
+            'picture_history': daily_timeline,
             'history': daily_history,
             'comparison': comparison_target,
             'period': {
@@ -2582,15 +2653,20 @@ class StatisticsService:
     # EMPLOYEE TREND ANALYTICS (Stable Colors, Improvement, Consistency)
     # --------------------------------------------------------------------------
     STABLE_PALETTE = [
-        '#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#8B5CF6',
-        '#EC4899', '#06B6D4', '#F97316', '#84CC16', '#6366F1',
-        '#14B8A6', '#D97706', '#E11D48', '#0284C7', '#7C3AED',
+        '#2563EB', '#DC2626', '#16A34A', '#9333EA', '#EA580C',
+        '#0891B2', '#DB2777', '#D97706', '#4F46E5', '#0D9488',
+        '#65A30D', '#C026D3', '#0284C7', '#E11D48', '#7C3AED',
+        '#059669', '#B45309', '#475569', '#F59E0B', '#10B981',
+        '#8B5CF6', '#F43F5E', '#3B82F6', '#84CC16', '#A855F7',
+        '#06B6D4', '#EC4899', '#1E3A8A',
     ]
 
     @classmethod
-    def _get_stable_employee_color(cls, employee_id, index=0):
+    def _get_stable_employee_color(cls, employee_or_id, index=0):
+        if hasattr(employee_or_id, 'statistics_color') and employee_or_id.statistics_color:
+            return employee_or_id.statistics_color
         try:
-            val = int(str(employee_id).replace('-', '')[:8], 16)
+            val = int(str(employee_or_id).replace('-', '')[:8], 16)
             return cls.STABLE_PALETTE[val % len(cls.STABLE_PALETTE)]
         except Exception:
             return cls.STABLE_PALETTE[index % len(cls.STABLE_PALETTE)]
@@ -2629,10 +2705,11 @@ class StatisticsService:
             consistency_info = cls._calculate_consistency(daily_list)
 
             # Timeline
-            timeline = [
-                {'date': p.work_day.date.strftime('%Y-%m-%d'), 'photos': p.photo_count}
+            emp_daily_map = {
+                p.work_day.date: p.photo_count
                 for p in emp_perfs
-            ]
+            }
+            timeline = cls._generate_gap_filled_timeline(emp_daily_map, value_key='photos')
 
             # Previous period performance for improvement / decline
             prev_perfs = DailyEmployeePerformance.objects.filter(
@@ -2657,7 +2734,8 @@ class StatisticsService:
                 'short_name': emp.first_name,
                 'role': emp.role,
                 'avatar': emp.avatar.url if emp.avatar else None,
-                'color': cls._get_stable_employee_color(emp.id, idx),
+                'color': cls._get_stable_employee_color(emp, idx),
+                'statistics_color': cls._get_stable_employee_color(emp, idx),
                 'total_photos': tot_photos,
                 'work_days_count': work_days_cnt,
                 'average_photos_per_day': avg_photos,
@@ -2668,6 +2746,7 @@ class StatisticsService:
                 'is_improved': change_pct > 0,
                 'is_declining': change_pct < 0,
                 'timeline': timeline,
+                'picture_history': timeline,
             })
 
         # Sort by total_photos DESC

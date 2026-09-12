@@ -2,7 +2,7 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 
 from apps.daily_sessions.models import WorkDay, DailyTeam, DailyEmployeePerformance, SellerDailyOperation
-from apps.employees.models import Bonus, Deduction
+from apps.employees.models import Bonus, Deduction, Advance
 from apps.attendance.models import AttendanceRecord
 from .services import StatisticsService
 
@@ -13,6 +13,7 @@ from .services import StatisticsService
 @receiver([post_save, post_delete], sender=SellerDailyOperation)
 @receiver([post_save, post_delete], sender=Bonus)
 @receiver([post_save, post_delete], sender=Deduction)
+@receiver([post_save, post_delete], sender=Advance)
 @receiver([post_save, post_delete], sender=AttendanceRecord)
 def invalidate_statistics_cache(sender, **kwargs):
     """

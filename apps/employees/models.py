@@ -37,6 +37,11 @@ class Employee(models.Model):
     )
     is_active = models.BooleanField(default=True)
     avatar = models.ImageField(upload_to='employees/avatars/', blank=True, null=True)
+    statistics_color = models.CharField(
+        max_length=7,
+        default='#2196F3',
+        help_text="Hex color code for employee statistics identity"
+    )
     notes = models.TextField(blank=True, null=True)
     fingerprint_registered = models.BooleanField(default=False)
     fingerprint_template_id = models.CharField(max_length=255, blank=True, null=True, unique=True)

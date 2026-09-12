@@ -10,9 +10,9 @@ from .services.timeline_service import TimelineService
 from .services.history_service import HistoryService
 
 class EmployeePortalPagination(PageNumberPagination):
-    page_size = 10
+    page_size = 50
     page_size_query_param = 'page_size'
-    max_page_size = 50
+    max_page_size = 1000
 
 class IsEmployee(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -56,8 +56,9 @@ class EmployeeDashboardViewSet(viewsets.ViewSet):
         if status_filter:
             queryset = queryset.filter(status=status_filter)
             
+        fetch_all = request.query_params.get('all') == 'true' or request.query_params.get('pagination') == 'false'
         paginator = EmployeePortalPagination()
-        page = paginator.paginate_queryset(queryset, request)
+        page = queryset if fetch_all else paginator.paginate_queryset(queryset, request)
         
         data = []
         for att in page:
@@ -71,17 +72,20 @@ class EmployeeDashboardViewSet(viewsets.ViewSet):
                 'notes': att.notes
             })
             
+        if fetch_all:
+            return Response(data)
         return paginator.get_paginated_response(data)
 
     @action(detail=False, methods=['get'], url_path='history/daily')
     def work_history(self, request):
         employee = self.get_employee()
+        fetch_all = request.query_params.get('all') == 'true' or request.query_params.get('pagination') == 'false'
         paginator = EmployeePortalPagination()
 
         if employee.role == 'seller':
             from apps.daily_sessions.models import SellerDailyOperation
             queryset = SellerDailyOperation.objects.filter(seller=employee).select_related('work_day', 'work_day__location').order_by('-work_day__date')
-            page = paginator.paginate_queryset(queryset, request)
+            page = queryset if fetch_all else paginator.paginate_queryset(queryset, request)
             data = []
             for op in page:
                 work_day = op.work_day
@@ -101,10 +105,12 @@ class EmployeeDashboardViewSet(viewsets.ViewSet):
                         'icon': location.icon,
                     } if location else None,
                 })
+            if fetch_all:
+                return Response(data)
             return paginator.get_paginated_response(data)
 
         queryset = HistoryService.get_work_history(employee)
-        page = paginator.paginate_queryset(queryset, request)
+        page = queryset if fetch_all else paginator.paginate_queryset(queryset, request)
         
         data = []
         for perf in page:
@@ -134,6 +140,8 @@ class EmployeeDashboardViewSet(viewsets.ViewSet):
                 } if location else None,
             })
             
+        if fetch_all:
+            return Response(data)
         return paginator.get_paginated_response(data)
 
     @action(detail=False, methods=['get'])
