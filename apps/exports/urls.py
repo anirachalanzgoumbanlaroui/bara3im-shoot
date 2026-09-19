@@ -10,4 +10,5 @@ urlpatterns = [
     path('date-range/excel/', views.DateRangeExcelExportView.as_view(), name='export_date_range_excel'),
     path('statistics/excel/', views.StatisticsExcelExportView.as_view(), name='export_statistics_excel'),
     path('database/excel/', views.DatabaseExcelExportView.as_view(), name='export_database_excel'),
+    path('location-daily-comparison/excel/', views.LocationDailyComparisonExcelExportView.as_view(), name='export_location_daily_comparison_excel'),
 ]

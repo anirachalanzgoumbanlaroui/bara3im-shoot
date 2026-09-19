@@ -3013,3 +3013,87 @@ class StatisticsService:
             pass
         return res
 
+    @classmethod
+    def get_location_daily_comparison(cls, time_filter='this_month', location_id=None, start_date=None, end_date=None):
+        """
+        Returns daily total pictures (clown photos only) for ALL locations,
+        with 0-filled gaps for every date in the selected range.
+        Used for the ARDIS vs SABLLET comparison chart.
+        """
+        cache_key = f"stats_loc_daily_{time_filter}_{start_date}_{end_date}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        s_date, e_date = cls.get_date_range(time_filter, start_date, end_date)
+
+        # Generate all dates in range
+        all_dates = []
+        current = s_date
+        while current <= e_date:
+            all_dates.append(current)
+            current += timedelta(days=1)
+
+        locations = Location.objects.all()
+        series = []
+
+        for loc in locations:
+            # Aggregate clown photos per date for this location
+            daily_totals = (
+                DailyEmployeePerformance.objects
+                .filter(
+                    work_day__location=loc,
+                    work_day__date__range=(s_date, e_date),
+                    work_day__status__in=cls.VALID_STATUSES,
+                    employee__role='clown'
+                )
+                .values('work_day__date')
+                .annotate(total=Coalesce(Sum('photo_count'), 0))
+                .order_by('work_day__date')
+            )
+            
+            # Build date->total map
+            date_map = {row['work_day__date']: row['total'] for row in daily_totals}
+            
+            # Fill all dates
+            data_points = []
+            total = 0
+            active_days = 0
+            best_pics = 0
+            best_date = None
+            
+            for d in all_dates:
+                pics = date_map.get(d, 0)
+                data_points.append({'date': d.strftime('%Y-%m-%d'), 'pictures': pics})
+                total += pics
+                if pics > 0:
+                    active_days += 1
+                if pics > best_pics:
+                    best_pics = pics
+                    best_date = d
+            
+            num_days = len(all_dates)
+            
+            series.append({
+                'location_id': str(loc.id),
+                'location_name': loc.name,
+                'location_color': loc.color_hex,
+                'total_pictures': total,
+                'avg_per_day': round(total / max(1, num_days), 1),
+                'active_days': active_days,
+                'best_day': {
+                    'date': best_date.strftime('%Y-%m-%d') if best_date else '',
+                    'pictures': best_pics,
+                },
+                'data': data_points,
+            })
+
+        # Sort by total descending
+        series.sort(key=lambda x: -x['total_pictures'])
+
+        res = {'series': series}
+        try:
+            cache.set(cache_key, res, CACHE_TIMEOUT)
+        except Exception:
+            pass
+        return res

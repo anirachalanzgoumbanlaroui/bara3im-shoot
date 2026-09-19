@@ -21,6 +21,7 @@ from apps.exports.services import (
     StatisticsExporter,
     DatabaseExporter,
 )
+from apps.exports.services.location_comparison_exporter import LocationDailyComparisonExporter
 
 
 class IsAdminUserPermission(permissions.BasePermission):
@@ -223,5 +224,24 @@ class DatabaseExcelExportView(APIView):
 
     def get(self, request):
         exporter = DatabaseExporter()
+        exporter.build_workbook()
+        return exporter.export_to_response()
+
+class LocationDailyComparisonExcelExportView(APIView):
+    """
+    GET /api/exports/location-daily-comparison/excel/?time_filter=...&start_date=...&end_date=...
+    Generates location daily comparison Excel workbook. Admin only.
+    """
+    permission_classes = [IsAdminUserPermission]
+
+    def get(self, request):
+        time_filter = request.query_params.get('time_filter', 'this_month')
+        s_str = request.query_params.get('start_date')
+        e_str = request.query_params.get('end_date')
+
+        s_d = datetime.strptime(s_str, '%Y-%m-%d').date() if s_str else None
+        e_d = datetime.strptime(e_str, '%Y-%m-%d').date() if e_str else None
+
+        exporter = LocationDailyComparisonExporter(time_filter=time_filter, start_date=s_d, end_date=e_d)
         exporter.build_workbook()
         return exporter.export_to_response()

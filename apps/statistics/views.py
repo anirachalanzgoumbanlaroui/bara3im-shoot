@@ -180,3 +180,8 @@ class StatisticsViewSet(viewsets.ViewSet):
         data = StatisticsService.get_period_comparison_stats(tf, loc, s_date, e_date)
         return Response(data)
 
+    @action(detail=False, methods=['get'], url_path='location-daily-comparison')
+    def location_daily_comparison(self, request):
+        tf, loc, s_date, e_date = self._get_params(request)
+        data = StatisticsService.get_location_daily_comparison(tf, loc, s_date, e_date)
+        return Response(data)
